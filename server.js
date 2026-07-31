@@ -695,6 +695,95 @@ function quoteRequestNewPage({ user, vendorsByCategory, cat1Options, flash }) {
   return layout({ title: '새 견적요청', body, user, flash });
 }
 
+function quoteRequestEditPage({ user, qr, items, vendorsByCategory, assignments, cat1Options, flash }) {
+  const groups = [...cat1Options, ...Object.keys(vendorsByCategory).filter((k) => !cat1Options.includes(k))];
+  const assignedViewIds = new Set(assignments.filter((a) => a.permission !== 'submit').map((a) => a.vendor_id));
+  const assignedSubmitIds = new Set(assignments.filter((a) => a.permission === 'submit').map((a) => a.vendor_id));
+
+  const catBlocks = groups.map((cat) => {
+    const vs = vendorsByCategory[cat] || [];
+    if (vs.length === 0) return '';
+    const rows = vs.map((v) => {
+      const isSubmit = assignedSubmitIds.has(v.id);
+      const isView = assignedViewIds.has(v.id) || isSubmit;
+      return `
+      <div class="vendor-row">
+        <span class="vname">${escapeHtml(v.name)}</span>
+        <label style="display:inline;margin:0;"><input type="checkbox" name="assign_view" value="${v.id}" ${isView ? 'checked' : ''}> 조회</label>
+        <label style="display:inline;margin:0;"><input type="checkbox" name="assign_submit" value="${v.id}" ${isSubmit ? 'checked' : ''}> 견적입력</label>
+      </div>`;
+    }).join('');
+    return `
+    <div class="category-block">
+      <div class="category-title">${escapeHtml(cat)} (${vs.length}개 업체)</div>
+      ${rows}
+    </div>`;
+  }).join('');
+
+  const itemRows = items.map((it) => `
+    <div class="form-row item-row">
+      <input type="hidden" name="item_id[]" value="${it.id}">
+      <div><label>품목명</label><input type="text" name="item_name[]" required value="${escapeHtml(it.item_name)}"></div>
+      <div><label>규격</label><input type="text" name="item_spec[]" value="${escapeHtml(it.spec || '')}"></div>
+      <div><label>수량</label><input type="number" name="item_qty[]" value="${it.qty}" min="1"></div>
+      <div><label>단위</label><input type="text" name="item_unit[]" value="${escapeHtml(it.unit || '')}"></div>
+      <div style="align-self:end;"><label>&nbsp;</label><label style="display:inline;margin:0;"><input type="checkbox" name="item_remove[]" value="${it.id}"> 이 품목 삭제</label></div>
+    </div>`).join('');
+
+  const blankRow = `
+    <div class="form-row item-row">
+      <input type="hidden" name="item_id[]" value="">
+      <div><label>품목명</label><input type="text" name="item_name[]"></div>
+      <div><label>규격</label><input type="text" name="item_spec[]"></div>
+      <div><label>수량</label><input type="number" name="item_qty[]" value="1" min="1"></div>
+      <div><label>단위</label><input type="text" name="item_unit[]"></div>
+      <div style="align-self:end;"><label>&nbsp;</label><span class="hint">신규 품목</span></div>
+    </div>`;
+
+  const body = `
+  <h1>견적요청 수정 — ${escapeHtml(qr.title)}</h1>
+  <p class="hint">이미 제출된 견적이 있는 품목을 삭제하면 해당 견적·선정 내역도 함께 삭제됩니다.</p>
+  <form method="POST" action="/admin/quote-requests/${qr.id}/edit">
+    <div class="card">
+      <label>견적요청 제목</label>
+      <input type="text" name="title" required value="${escapeHtml(qr.title)}">
+      <div class="form-row">
+        <div><label>견적 제출 마감일</label><input type="date" name="submission_deadline" value="${escapeHtml(qr.submission_deadline || '')}"></div>
+        <div><label>요청 납기일자</label><input type="date" name="requested_delivery_date" value="${escapeHtml(qr.requested_delivery_date || '')}"></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h3 style="margin-top:0;">품목 목록</h3>
+      <div id="items-wrap">
+        ${itemRows}
+      </div>
+      <button type="button" class="btn secondary small" onclick="addItemRow()">+ 품목 추가</button>
+    </div>
+
+    <div class="card">
+      <h3 style="margin-top:0;">카테고리별(카테고리1 기준) 업체 배정</h3>
+      <p class="hint">체크한 업체에게 이 견적요청이 노출됩니다. '견적입력'은 견적 제출 가능, '조회'만 체크하면 열람만 가능합니다. 체크를 해제하면 해당 업체는 더 이상 이 견적요청에 접근할 수 없습니다(단, 이미 제출한 견적 내역은 유지됩니다).</p>
+      ${catBlocks || '<p class="hint">등록된 업체가 없습니다.</p>'}
+    </div>
+
+    <button type="submit">수정 저장</button>
+    <a class="btn ghost" href="/admin/quote-requests/${qr.id}" style="margin-left:8px;">취소</a>
+  </form>
+
+  <script>
+    function addItemRow() {
+      const wrap = document.getElementById('items-wrap');
+      const template = document.createElement('div');
+      template.innerHTML = ${JSON.stringify(blankRow)};
+      wrap.appendChild(template.firstElementChild);
+    }
+  </script>
+  `;
+  return layout({ title: `견적요청 수정 — ${qr.title}`, body, user, flash });
+}
+
+
 function submissionRow(s, { isLowest, isSelected }) {
   const typeLabel = s.type === 'requested' ? '요청품' : '대체품';
   const typeBadge = `<span class="badge ${s.type}">${typeLabel}</span>`;
@@ -773,6 +862,7 @@ function quoteRequestDetailPage({ user, qr, items, assignments, vendorsByCategor
   const body = `
   <div class="section-actions">
     <h1>${escapeHtml(qr.title)}</h1>
+    <a class="btn ghost" href="/admin/quote-requests/${qr.id}/edit">견적요청 수정</a>
   </div>
   <div class="card">
     <div class="qr-meta">제출 마감: ${escapeHtml(qr.submission_deadline || '-')} · 요청 납기일자: ${escapeHtml(qr.requested_delivery_date || '-')}</div>
@@ -906,7 +996,7 @@ function vendorQuoteRequestPage({ user, qr, items, permission, mySubmissions, fl
   `;
   return layout({ title: qr.title, body, user, flash });
 }
-const views = { loginPage, adminDashboard, adminVendorsPage, adminCategoriesPage, quoteRequestNewPage, quoteRequestDetailPage, vendorDashboard, vendorQuoteRequestPage };
+const views = { loginPage, adminDashboard, adminVendorsPage, adminCategoriesPage, quoteRequestNewPage, quoteRequestEditPage, quoteRequestDetailPage, vendorDashboard, vendorQuoteRequestPage };
 
 // ===== server.js =====
 
@@ -1288,6 +1378,82 @@ router.get('/admin/quote-requests/:id', (req, res) => {
 
   res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
   res.end(views.quoteRequestDetailPage({ user: u, qr, items, assignments, vendorsByCategory, submissionsByItem, selections }));
+});
+
+// ---------- 관리자: 견적요청 수정 ----------
+router.get('/admin/quote-requests/:id/edit', (req, res) => {
+  const u = requireLogin('admin')(req, res);
+  if (!u) return;
+  const id = Number(req.params.id);
+  const qr = db.prepare('SELECT * FROM quote_requests WHERE id = ?').get(id);
+  if (!qr) { res.writeHead(404); return res.end('견적요청을 찾을 수 없습니다.'); }
+  const items = db.prepare('SELECT * FROM quote_items WHERE quote_request_id = ?').all(id);
+  const assignments = db.prepare('SELECT * FROM vendor_assignments WHERE quote_request_id = ?').all(id);
+  const vendors = db.prepare('SELECT * FROM vendors WHERE active = 1 ORDER BY category1, name').all();
+  const vendorsByCategory = {};
+  for (const v of vendors) {
+    const key = v.category1 || '미분류';
+    if (!vendorsByCategory[key]) vendorsByCategory[key] = [];
+    vendorsByCategory[key].push(v);
+  }
+  const cat1Options = getCategoryOptions('cat1').map((o) => o.label);
+  res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+  res.end(views.quoteRequestEditPage({ user: u, qr, items, vendorsByCategory, assignments, cat1Options }));
+});
+
+router.post('/admin/quote-requests/:id/edit', async (req, res) => {
+  const u = requireLogin('admin')(req, res);
+  if (!u) return;
+  const id = Number(req.params.id);
+  const qr = db.prepare('SELECT * FROM quote_requests WHERE id = ?').get(id);
+  if (!qr) { res.writeHead(404); return res.end('견적요청을 찾을 수 없습니다.'); }
+
+  const body = await parseBody(req);
+  const title = (body.title || '').trim();
+  if (!title) return redirect(res, `/admin/quote-requests/${id}/edit`);
+
+  db.prepare(`
+    UPDATE quote_requests SET title = ?, submission_deadline = ?, requested_delivery_date = ? WHERE id = ?
+  `).run(title, body.submission_deadline || null, body.requested_delivery_date || null, id);
+
+  // ---- 품목 동기화 ----
+  const itemIds = toArray(body['item_id[]']);
+  const names = toArray(body['item_name[]']);
+  const specs = toArray(body['item_spec[]']);
+  const qtys = toArray(body['item_qty[]']);
+  const units = toArray(body['item_unit[]']);
+  const removeIds = new Set(toArray(body['item_remove[]']).map(Number));
+
+  const updateItem = db.prepare('UPDATE quote_items SET item_name=?, spec=?, qty=?, unit=? WHERE id=? AND quote_request_id=?');
+  const insertItem = db.prepare('INSERT INTO quote_items (quote_request_id, item_name, spec, qty, unit) VALUES (?, ?, ?, ?, ?)');
+  const deleteItem = db.prepare('DELETE FROM quote_items WHERE id=? AND quote_request_id=?');
+
+  for (let i = 0; i < names.length; i++) {
+    const itemId = itemIds[i] ? Number(itemIds[i]) : null;
+    if (itemId && removeIds.has(itemId)) {
+      deleteItem.run(itemId, id);
+      continue;
+    }
+    if (!names[i] || !names[i].trim()) continue;
+    if (itemId) {
+      updateItem.run(names[i].trim(), specs[i] || '', Number(qtys[i]) || 1, units[i] || '', itemId, id);
+    } else {
+      insertItem.run(id, names[i].trim(), specs[i] || '', Number(qtys[i]) || 1, units[i] || '');
+    }
+  }
+
+  // ---- 업체 배정 동기화 (기존 배정을 지우고 다시 반영) ----
+  const viewIds = new Set(toArray(body.assign_view).map(Number));
+  const submitIds = new Set(toArray(body.assign_submit).map(Number));
+  const allIds = new Set([...viewIds, ...submitIds]);
+  db.prepare('DELETE FROM vendor_assignments WHERE quote_request_id = ?').run(id);
+  const insertAssign = db.prepare('INSERT OR REPLACE INTO vendor_assignments (quote_request_id, vendor_id, permission) VALUES (?, ?, ?)');
+  for (const vid of allIds) {
+    const perm = submitIds.has(vid) ? 'submit' : 'view';
+    insertAssign.run(id, vid, perm);
+  }
+
+  redirect(res, `/admin/quote-requests/${id}`);
 });
 
 // ---------- 관리자: 최종 선정 ----------
