@@ -311,6 +311,7 @@ CREATE TABLE IF NOT EXISTS submissions (
 CREATE TABLE IF NOT EXISTS final_selections (
   quote_item_id INTEGER PRIMARY KEY REFERENCES quote_items(id) ON DELETE CASCADE,
   submission_id INTEGER NOT NULL REFERENCES submissions(id) ON DELETE CASCADE,
+  reason TEXT DEFAULT '',
   selected_at TEXT NOT NULL
 );
 `);
@@ -331,6 +332,12 @@ addColumnIfMissing('account_number', "account_number TEXT DEFAULT ''");
 addColumnIfMissing('account_holder', "account_holder TEXT DEFAULT ''");
 addColumnIfMissing('biz_reg_file', "biz_reg_file TEXT DEFAULT ''");
 addColumnIfMissing('bankbook_file', "bankbook_file TEXT DEFAULT ''");
+// final_selections에 reason 컬럼이 없던 예전 DB 대응
+const finalSelCols = db.prepare("PRAGMA table_info(final_selections)").all().map((c) => c.name);
+if (!finalSelCols.includes('reason')) {
+  db.exec("ALTER TABLE final_selections ADD COLUMN reason TEXT DEFAULT ''");
+}
+
 if (vendorCols.includes('category') && vendorCols.includes('category1')) {
   // 예전 단일 category 값을 category1로 옮겨준다 (비어있는 경우에만)
   db.exec("UPDATE vendors SET category1 = category WHERE (category1 IS NULL OR category1 = '') AND category IS NOT NULL AND category <> ''");
@@ -801,12 +808,18 @@ function submissionRow(s, { isLowest, isSelected }) {
       <td>${escapeHtml(s.manufacturer || '-')}</td>
       <td>${s.substitute_reason ? escapeHtml(s.substitute_reason) : '-'}</td>
       <td>
-        ${isLowest && !isSelected ? `
+        ${isSelected ? '<span class="hint">현재 선정됨</span>' : (isLowest ? `
         <form method="POST" action="/admin/quote-requests/select" class="inline">
           <input type="hidden" name="quote_item_id" value="${s.quote_item_id}">
           <input type="hidden" name="submission_id" value="${s.id}">
-          <button type="submit" class="btn small">이 후보로 선정</button>
-        </form>` : (isSelected ? '<span class="hint">선정됨</span>' : '<span class="hint">최저가 아님</span>')}
+          <button type="submit" class="btn small">이 업체로 선정</button>
+        </form>` : `
+        <form method="POST" action="/admin/quote-requests/select" style="display:flex;gap:4px;align-items:center;">
+          <input type="hidden" name="quote_item_id" value="${s.quote_item_id}">
+          <input type="hidden" name="submission_id" value="${s.id}">
+          <input type="text" name="reason" placeholder="선정 사유(필수)" required style="width:120px;font-size:12px;padding:4px 6px;">
+          <button type="submit" class="btn small secondary">선정</button>
+        </form>`)}
       </td>
     </tr>`;
 }
@@ -879,10 +892,11 @@ function quoteRequestDetailPage({ user, qr, items, assignments, vendorsByCategor
   <h2>품목별 최종 선정 결과</h2>
   <div class="card">
     <table>
-      <thead><tr><th>기준 품목</th><th>선정 구분</th><th>선정 품목</th><th>선정 업체</th><th>수량</th><th>단가</th><th>품목 총금액</th><th>납기일자</th></tr></thead>
+      <thead><tr><th>기준 품목</th><th>선정 구분</th><th>선정 품목</th><th>선정 업체</th><th>수량</th><th>단가</th><th>품목 총금액</th><th>납기일자</th><th>선정 사유</th></tr></thead>
       <tbody>
         ${items.filter((it) => selections[it.id]).map((it) => {
           const s = selections[it.id];
+          const reasonLabel = s.isLowestPick ? '최저가' : (s.selectionReason || '-');
           return `<tr>
             <td>${escapeHtml(it.item_name)}</td>
             <td><span class="badge ${s.type}">${s.type === 'requested' ? '요청품' : '대체품'}</span></td>
@@ -892,6 +906,7 @@ function quoteRequestDetailPage({ user, qr, items, assignments, vendorsByCategor
             <td>${money(s.unit_price)}</td>
             <td>${money(s.unit_price * s.qty)}</td>
             <td>${escapeHtml(s.delivery_date || '-')}</td>
+            <td>${s.isLowestPick ? `<span class="badge lowest" style="margin-left:0;">${escapeHtml(reasonLabel)}</span>` : escapeHtml(reasonLabel)}</td>
           </tr>`;
         }).join('')}
       </tbody>
@@ -1110,7 +1125,10 @@ function computeSelectionForItem(itemId) {
   const selectedRow = db.prepare('SELECT * FROM final_selections WHERE quote_item_id = ?').get(itemId);
   let selected = null;
   if (selectedRow) {
-    selected = submissions.find((s) => s.id === selectedRow.submission_id) || null;
+    const found = submissions.find((s) => s.id === selectedRow.submission_id);
+    if (found) {
+      selected = { ...found, selectionReason: selectedRow.reason || '', isLowestPick: found.unit_price === minPrice };
+    }
   }
   return { submissions, minPrice, candidates, selected };
 }
@@ -1463,19 +1481,27 @@ router.post('/admin/quote-requests/select', async (req, res) => {
   const body = await parseBody(req);
   const itemId = Number(body.quote_item_id);
   const submissionId = Number(body.submission_id);
+  const reasonInput = (body.reason || '').trim();
   const item = db.prepare('SELECT * FROM quote_items WHERE id = ?').get(itemId);
   if (!item) { res.writeHead(404); return res.end('품목을 찾을 수 없습니다.'); }
 
-  const { candidates } = computeSelectionForItem(itemId);
-  const isCandidate = candidates.some((c) => c.id === submissionId);
-  if (!isCandidate) {
+  const { submissions, minPrice } = computeSelectionForItem(itemId);
+  const target = submissions.find((s) => s.id === submissionId);
+  if (!target) {
     res.writeHead(400, { 'Content-Type': 'text/plain; charset=utf-8' });
-    return res.end('최저가 후보만 최종 선정할 수 있습니다.');
+    return res.end('선택한 견적을 찾을 수 없습니다.');
   }
+  const isLowest = target.unit_price === minPrice;
+  if (!isLowest && !reasonInput) {
+    res.writeHead(400, { 'Content-Type': 'text/plain; charset=utf-8' });
+    return res.end('최저가가 아닌 업체를 선정하려면 선정 사유를 입력해야 합니다.');
+  }
+  const reasonToStore = isLowest ? '' : reasonInput;
+
   db.prepare(`
-    INSERT INTO final_selections (quote_item_id, submission_id, selected_at) VALUES (?, ?, ?)
-    ON CONFLICT(quote_item_id) DO UPDATE SET submission_id = excluded.submission_id, selected_at = excluded.selected_at
-  `).run(itemId, submissionId, new Date().toISOString());
+    INSERT INTO final_selections (quote_item_id, submission_id, reason, selected_at) VALUES (?, ?, ?, ?)
+    ON CONFLICT(quote_item_id) DO UPDATE SET submission_id = excluded.submission_id, reason = excluded.reason, selected_at = excluded.selected_at
+  `).run(itemId, submissionId, reasonToStore, new Date().toISOString());
 
   redirect(res, `/admin/quote-requests/${item.quote_request_id}`);
 });
