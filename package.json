@@ -1,0 +1,8 @@
+{
+  "name": "hillmaru-quote-system",
+  "version": "1.0.0",
+  "description": "힐마루 견적관리 시스템",
+  "main": "server.js",
+  "scripts": { "start": "node server.js" },
+  "engines": { "node": ">=22.5.0" }
+}
