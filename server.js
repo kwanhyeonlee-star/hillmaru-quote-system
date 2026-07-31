@@ -60,23 +60,87 @@ class Router {
   }
 }
 
+// multipart/form-data 본문을 파싱한다 (외부 패키지 없이 직접 구현).
+// buffer: 전체 요청 본문, boundary: Content-Type 헤더에서 추출한 경계 문자열
+function parseMultipart(buffer, boundary) {
+  const fields = {};
+  const files = {};
+  const boundaryBuf = Buffer.from(`--${boundary}`);
+  const parts = [];
+  let searchStart = 0;
+  while (true) {
+    const idx = buffer.indexOf(boundaryBuf, searchStart);
+    if (idx === -1) break;
+    parts.push(idx);
+    searchStart = idx + boundaryBuf.length;
+  }
+  for (let i = 0; i < parts.length - 1; i++) {
+    let start = parts[i] + boundaryBuf.length;
+    const end = parts[i + 1];
+    // 경계 뒤 "--"이면 종료 경계
+    const afterBoundary = buffer.slice(start, start + 2).toString();
+    if (afterBoundary === '--') continue;
+    // \r\n 건너뛰기
+    if (buffer.slice(start, start + 2).toString() === '\r\n') start += 2;
+    let chunk = buffer.slice(start, end);
+    // 마지막 \r\n 제거
+    if (chunk.slice(chunk.length - 2).toString() === '\r\n') chunk = chunk.slice(0, chunk.length - 2);
+
+    const headerEnd = chunk.indexOf('\r\n\r\n');
+    if (headerEnd === -1) continue;
+    const headerStr = chunk.slice(0, headerEnd).toString('utf8');
+    const partBody = chunk.slice(headerEnd + 4);
+
+    const nameMatch = headerStr.match(/name="([^"]*)"/);
+    const filenameMatch = headerStr.match(/filename="([^"]*)"/);
+    const ctMatch = headerStr.match(/Content-Type:\s*([^\r\n]+)/i);
+    const name = nameMatch ? nameMatch[1] : null;
+    if (!name) continue;
+
+    if (filenameMatch) {
+      if (filenameMatch[1]) {
+        files[name] = {
+          filename: filenameMatch[1],
+          contentType: ctMatch ? ctMatch[1].trim() : 'application/octet-stream',
+          data: partBody,
+        };
+      }
+    } else {
+      fields[name] = partBody.toString('utf8');
+    }
+  }
+  return { fields, files };
+}
+
 function parseBody(req) {
   return new Promise((resolve, reject) => {
-    let data = '';
+    const chunks = [];
+    let size = 0;
     req.on('data', (chunk) => {
-      data += chunk;
-      if (data.length > 5 * 1024 * 1024) {
-        reject(new Error('요청 본문이 너무 큽니다'));
+      chunks.push(chunk);
+      size += chunk.length;
+      if (size > 15 * 1024 * 1024) {
+        reject(new Error('요청 본문이 너무 큽니다 (최대 15MB)'));
         req.destroy();
       }
     });
     req.on('end', () => {
+      const buf = Buffer.concat(chunks);
       const ct = req.headers['content-type'] || '';
       try {
-        if (ct.includes('application/json')) {
-          resolve(data ? JSON.parse(data) : {});
+        if (ct.includes('multipart/form-data')) {
+          const bm = ct.match(/boundary=(?:"([^"]+)"|([^;]+))/);
+          const boundary = bm ? (bm[1] || bm[2]) : null;
+          if (!boundary) { req.files = {}; return resolve({}); }
+          const { fields, files } = parseMultipart(buf, boundary);
+          req.files = files;
+          resolve(fields);
+        } else if (ct.includes('application/json')) {
+          req.files = {};
+          resolve(buf.length ? JSON.parse(buf.toString('utf8')) : {});
         } else {
-          resolve(querystring.parse(data));
+          req.files = {};
+          resolve(querystring.parse(buf.toString('utf8')));
         }
       } catch (e) {
         reject(e);
@@ -158,6 +222,9 @@ const DATA_DIR = path.join(__dirname, '..', 'data');
 if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
 const DB_PATH = path.join(DATA_DIR, 'app.db');
 
+const UPLOAD_DIR = path.join(DATA_DIR, 'uploads');
+if (!fs.existsSync(UPLOAD_DIR)) fs.mkdirSync(UPLOAD_DIR, { recursive: true });
+
 const db = new DatabaseSync(DB_PATH);
 db.exec('PRAGMA foreign_keys = ON;');
 
@@ -172,15 +239,30 @@ CREATE TABLE IF NOT EXISTS admins (
 CREATE TABLE IF NOT EXISTS vendors (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   name TEXT NOT NULL,
-  category TEXT NOT NULL DEFAULT '미분류',
+  category1 TEXT DEFAULT '',
+  category2 TEXT DEFAULT '',
+  category3 TEXT DEFAULT '',
   biz_reg_no TEXT DEFAULT '',
   contact_name TEXT DEFAULT '',
   contact_email TEXT DEFAULT '',
   login_id TEXT UNIQUE NOT NULL,
   password_hash TEXT NOT NULL,
   display_name TEXT DEFAULT '',
+  bank_name TEXT DEFAULT '',
+  account_number TEXT DEFAULT '',
+  account_holder TEXT DEFAULT '',
+  biz_reg_file TEXT DEFAULT '',
+  bankbook_file TEXT DEFAULT '',
   active INTEGER NOT NULL DEFAULT 1,
   created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS category_options (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  group_key TEXT NOT NULL, -- cat1 | cat2 | cat3
+  label TEXT NOT NULL,
+  sort_order INTEGER NOT NULL DEFAULT 0,
+  UNIQUE(group_key, label)
 );
 
 CREATE TABLE IF NOT EXISTS quote_requests (
@@ -213,7 +295,7 @@ CREATE TABLE IF NOT EXISTS submissions (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   quote_item_id INTEGER NOT NULL REFERENCES quote_items(id) ON DELETE CASCADE,
   vendor_id INTEGER NOT NULL REFERENCES vendors(id) ON DELETE CASCADE,
-  type TEXT NOT NULL DEFAULT 'requested', -- requested | substitute
+  type TEXT NOT NULL DEFAULT 'requested',
   product_name TEXT NOT NULL,
   spec TEXT DEFAULT '',
   qty INTEGER NOT NULL DEFAULT 1,
@@ -233,6 +315,27 @@ CREATE TABLE IF NOT EXISTS final_selections (
 );
 `);
 
+// ---- 마이그레이션: 기존 vendors 테이블에 category(단일) 컬럼만 있던 경우 대응 ----
+const vendorCols = db.prepare("PRAGMA table_info(vendors)").all().map((c) => c.name);
+function addColumnIfMissing(col, ddl) {
+  if (!vendorCols.includes(col)) {
+    db.exec(`ALTER TABLE vendors ADD COLUMN ${ddl}`);
+    vendorCols.push(col);
+  }
+}
+addColumnIfMissing('category1', "category1 TEXT DEFAULT ''");
+addColumnIfMissing('category2', "category2 TEXT DEFAULT ''");
+addColumnIfMissing('category3', "category3 TEXT DEFAULT ''");
+addColumnIfMissing('bank_name', "bank_name TEXT DEFAULT ''");
+addColumnIfMissing('account_number', "account_number TEXT DEFAULT ''");
+addColumnIfMissing('account_holder', "account_holder TEXT DEFAULT ''");
+addColumnIfMissing('biz_reg_file', "biz_reg_file TEXT DEFAULT ''");
+addColumnIfMissing('bankbook_file', "bankbook_file TEXT DEFAULT ''");
+if (vendorCols.includes('category') && vendorCols.includes('category1')) {
+  // 예전 단일 category 값을 category1로 옮겨준다 (비어있는 경우에만)
+  db.exec("UPDATE vendors SET category1 = category WHERE (category1 IS NULL OR category1 = '') AND category IS NOT NULL AND category <> ''");
+}
+
 // 기본 관리자 계정 시딩 (없을 때만)
 const adminCount = db.prepare('SELECT COUNT(*) AS c FROM admins').get().c;
 if (adminCount === 0) {
@@ -240,6 +343,25 @@ if (adminCount === 0) {
     .run('admin', hashPassword('admin1234'), '관리자');
   console.log('[초기화] 기본 관리자 계정 생성: admin / admin1234 (로그인 후 반드시 변경하세요)');
 }
+
+// 카테고리 옵션 기본값 시딩 (해당 그룹에 아무 옵션도 없을 때만)
+function seedCategoryGroup(groupKey, labels) {
+  const count = db.prepare('SELECT COUNT(*) AS c FROM category_options WHERE group_key = ?').get(groupKey).c;
+  if (count === 0 && labels.length > 0) {
+    const insert = db.prepare('INSERT INTO category_options (group_key, label, sort_order) VALUES (?, ?, ?)');
+    labels.forEach((label, i) => insert.run(groupKey, label, i));
+  }
+}
+seedCategoryGroup('cat1', ['코스', '일반관리', '시설']);
+seedCategoryGroup('cat2', ['저장품', '소모품', '코스 관리비']);
+seedCategoryGroup('cat3', []);
+
+function getCategoryOptions(groupKey) {
+  return db.prepare('SELECT * FROM category_options WHERE group_key = ? ORDER BY sort_order, id').all(groupKey);
+}
+
+module.exports.UPLOAD_DIR = UPLOAD_DIR;
+module.exports.getCategoryOptions = getCategoryOptions;
 
 // ===== lib/render.js =====
 function escapeHtml(str) {
@@ -293,7 +415,9 @@ function layout({ title, body, user, flash }) {
 }
 
 // ===== lib/views.js =====
-const CATEGORIES = ['카테고리1', '카테고리2', '카테고리3', '미분류'];
+function optionTags(options, selected) {
+  return options.map((o) => `<option value="${escapeHtml(o)}" ${o === selected ? 'selected' : ''}>${escapeHtml(o)}</option>`).join('');
+}
 
 function loginPage({ role = 'admin', error } = {}) {
   const body = `
@@ -345,48 +469,82 @@ function adminDashboard({ user, requests, flash }) {
     <a class="btn" href="/admin/quote-requests/new">+ 새 견적요청</a>
   </div>
   <div class="section-actions" style="margin-bottom:14px;">
-    <a href="/admin/vendors">업체 관리 →</a>
+    <div><a href="/admin/vendors">업체 관리 →</a></div>
+    <div><a href="/admin/categories">업체 카테고리 관리 →</a></div>
   </div>
   ${requests.length === 0 ? '<div class="card">등록된 견적요청이 없습니다.</div>' : `<div class="card-grid">${cards}</div>`}
   `;
   return layout({ title: '관리자 대시보드', body, user, flash });
 }
 
-function vendorRow(v, opts = {}) {
-  return `<option value="${v.id}">${escapeHtml(v.name)}${v.active ? '' : ' (비활성)'}</option>`;
+function fileLink(id, type, filename) {
+  if (!filename) return '<span class="hint">미등록</span>';
+  return `<a href="/admin/vendors/file/${id}/${type}" target="_blank">파일 보기</a>`;
 }
 
-function adminVendorsPage({ user, vendors, flash, editVendor }) {
+function adminVendorsPage({ user, vendors, flash, editVendor, cat1Options, cat2Options, cat3Options }) {
   const rows = vendors.map((v) => `
     <tr>
       <td>${escapeHtml(v.name)}</td>
-      <td>${escapeHtml(v.category)}</td>
+      <td>${escapeHtml([v.category1, v.category2, v.category3].filter(Boolean).join(' / ') || '-')}</td>
       <td>${escapeHtml(v.contact_name)}</td>
       <td>${escapeHtml(v.contact_email)}</td>
       <td>${escapeHtml(v.login_id)}</td>
       <td>${v.active ? '사용' : '비활성'}</td>
+      <td>${fileLink(v.id, 'biz', v.biz_reg_file)}</td>
+      <td>${fileLink(v.id, 'bankbook', v.bankbook_file)}</td>
       <td><a class="btn small ghost" href="/admin/vendors?edit=${v.id}">수정</a></td>
     </tr>`).join('');
 
-  const catOptions = CATEGORIES.map((c) => `<option value="${c}" ${editVendor && editVendor.category === c ? 'selected' : ''}>${c}</option>`).join('');
+  const cat1Sel = editVendor ? editVendor.category1 : '';
+  const cat2Sel = editVendor ? editVendor.category2 : '';
+  const cat3Sel = editVendor ? editVendor.category3 : '';
 
   const body = `
   <h1>업체 관리</h1>
   <div class="card">
     <table>
-      <thead><tr><th>업체명</th><th>카테고리</th><th>담당자</th><th>이메일</th><th>로그인ID</th><th>상태</th><th></th></tr></thead>
-      <tbody>${rows || '<tr><td colspan="7">등록된 업체가 없습니다.</td></tr>'}</tbody>
+      <thead><tr><th>업체명</th><th>카테고리</th><th>담당자</th><th>이메일</th><th>로그인ID</th><th>상태</th><th>사업자등록증</th><th>통장사본</th><th></th></tr></thead>
+      <tbody>${rows || '<tr><td colspan="9">등록된 업체가 없습니다.</td></tr>'}</tbody>
     </table>
   </div>
 
   <h2>${editVendor ? `업체 정보 수정 — ${escapeHtml(editVendor.name)}` : '업체 신규 등록'}</h2>
   <div class="card">
-    <form method="POST" action="${editVendor ? `/admin/vendors/${editVendor.id}` : '/admin/vendors'}">
+    <form method="POST" action="${editVendor ? `/admin/vendors/${editVendor.id}` : '/admin/vendors'}" enctype="multipart/form-data">
       <div class="form-row">
         <div><label>업체명</label><input type="text" name="name" required value="${editVendor ? escapeHtml(editVendor.name) : ''}"></div>
-        <div><label>업체 카테고리</label><select name="category">${catOptions}</select></div>
         <div><label>사업자번호</label><input type="text" name="biz_reg_no" value="${editVendor ? escapeHtml(editVendor.biz_reg_no) : ''}"></div>
       </div>
+
+      <fieldset>
+        <legend>업체 카테고리</legend>
+        <p class="hint">목록에 없는 값이 필요하면 <a href="/admin/categories" target="_blank">카테고리 관리</a>에서 먼저 추가해주세요.</p>
+        <div class="form-row">
+          <div>
+            <label>카테고리1</label>
+            <select name="category1">
+              <option value="">선택 안 함</option>
+              ${optionTags(cat1Options, cat1Sel)}
+            </select>
+          </div>
+          <div>
+            <label>카테고리2</label>
+            <select name="category2">
+              <option value="">선택 안 함</option>
+              ${optionTags(cat2Options, cat2Sel)}
+            </select>
+          </div>
+          <div>
+            <label>카테고리3</label>
+            <select name="category3">
+              <option value="">선택 안 함</option>
+              ${optionTags(cat3Options, cat3Sel)}
+            </select>
+          </div>
+        </div>
+      </fieldset>
+
       <div class="form-row">
         <div><label>담당자명</label><input type="text" name="contact_name" value="${editVendor ? escapeHtml(editVendor.contact_name) : ''}"></div>
         <div><label>담당자 이메일</label><input type="email" name="contact_email" value="${editVendor ? escapeHtml(editVendor.contact_email) : ''}"></div>
@@ -402,6 +560,32 @@ function adminVendorsPage({ user, vendors, flash, editVendor }) {
           </select>
         </div>
       </div>
+
+      <fieldset>
+        <legend>계좌 정보</legend>
+        <div class="form-row">
+          <div><label>은행명</label><input type="text" name="bank_name" value="${editVendor ? escapeHtml(editVendor.bank_name) : ''}"></div>
+          <div><label>계좌번호</label><input type="text" name="account_number" value="${editVendor ? escapeHtml(editVendor.account_number) : ''}"></div>
+          <div><label>예금주</label><input type="text" name="account_holder" value="${editVendor ? escapeHtml(editVendor.account_holder) : ''}"></div>
+        </div>
+      </fieldset>
+
+      <fieldset>
+        <legend>첨부 서류</legend>
+        <div class="form-row">
+          <div>
+            <label>사업자등록증</label>
+            <input type="file" name="biz_reg_file" accept=".pdf,.jpg,.jpeg,.png">
+            ${editVendor ? `<div class="hint">현재: ${fileLink(editVendor.id, 'biz', editVendor.biz_reg_file)}</div>` : ''}
+          </div>
+          <div>
+            <label>통장사본</label>
+            <input type="file" name="bankbook_file" accept=".pdf,.jpg,.jpeg,.png">
+            ${editVendor ? `<div class="hint">현재: ${fileLink(editVendor.id, 'bankbook', editVendor.bankbook_file)}</div>` : ''}
+          </div>
+        </div>
+      </fieldset>
+
       <div style="margin-top:16px;">
         <button type="submit">${editVendor ? '수정 저장' : '등록'}</button>
         ${editVendor ? '<a class="btn ghost" href="/admin/vendors" style="margin-left:8px;">취소</a>' : ''}
@@ -412,8 +596,44 @@ function adminVendorsPage({ user, vendors, flash, editVendor }) {
   return layout({ title: '업체 관리', body, user, flash });
 }
 
-function quoteRequestNewPage({ user, vendorsByCategory, flash }) {
-  const catBlocks = CATEGORIES.map((cat) => {
+function adminCategoriesPage({ user, groups, flash }) {
+  const groupLabels = { cat1: '카테고리1', cat2: '카테고리2', cat3: '카테고리3' };
+  const blocks = ['cat1', 'cat2', 'cat3'].map((gk) => {
+    const items = groups[gk] || [];
+    const rows = items.map((o) => `
+      <div class="vendor-row">
+        <form method="POST" action="/admin/categories/${o.id}" class="inline" style="flex:1;display:flex;gap:8px;align-items:center;">
+          <input type="text" name="label" value="${escapeHtml(o.label)}" style="flex:1;">
+          <button type="submit" class="btn small">저장</button>
+        </form>
+        <form method="POST" action="/admin/categories/${o.id}/delete" class="inline" onsubmit="return confirm('이 카테고리 값을 삭제할까요? 이미 등록된 업체의 값은 유지됩니다.');">
+          <button type="submit" class="btn small danger">삭제</button>
+        </form>
+      </div>`).join('');
+    return `
+    <div class="card">
+      <h3 style="margin-top:0;">${groupLabels[gk]}</h3>
+      ${items.length === 0 ? '<p class="hint">등록된 값이 없습니다.</p>' : rows}
+      <form method="POST" action="/admin/categories" style="margin-top:12px;display:flex;gap:8px;">
+        <input type="hidden" name="group_key" value="${gk}">
+        <input type="text" name="label" placeholder="새 값 추가" required style="flex:1;">
+        <button type="submit" class="btn secondary small">추가</button>
+      </form>
+    </div>`;
+  }).join('');
+
+  const body = `
+  <h1>업체 카테고리 관리</h1>
+  <p class="hint">여기서 추가·수정·삭제한 값은 업체 등록/수정 화면의 카테고리1·2·3 선택 목록에 바로 반영됩니다.</p>
+  ${blocks}
+  <a href="/admin/vendors">← 업체 관리로 돌아가기</a>
+  `;
+  return layout({ title: '카테고리 관리', body, user, flash });
+}
+
+function quoteRequestNewPage({ user, vendorsByCategory, cat1Options, flash }) {
+  const groups = [...cat1Options, ...Object.keys(vendorsByCategory).filter((k) => !cat1Options.includes(k))];
+  const catBlocks = groups.map((cat) => {
     const vs = vendorsByCategory[cat] || [];
     if (vs.length === 0) return '';
     const rows = vs.map((v) => `
@@ -424,7 +644,7 @@ function quoteRequestNewPage({ user, vendorsByCategory, flash }) {
       </div>`).join('');
     return `
     <div class="category-block">
-      <div class="category-title">${cat} (${vs.length}개 업체)</div>
+      <div class="category-title">${escapeHtml(cat)} (${vs.length}개 업체)</div>
       ${rows}
     </div>`;
   }).join('');
@@ -455,7 +675,7 @@ function quoteRequestNewPage({ user, vendorsByCategory, flash }) {
     </div>
 
     <div class="card">
-      <h3 style="margin-top:0;">카테고리별 업체 배정</h3>
+      <h3 style="margin-top:0;">카테고리별(카테고리1 기준) 업체 배정</h3>
       <p class="hint">체크한 업체에게 이 견적요청이 노출됩니다. '견적입력'은 견적 제출 가능, '조회'만 체크하면 열람만 가능합니다.</p>
       ${catBlocks || '<p class="hint">등록된 업체가 없습니다. 먼저 업체를 등록하세요.</p>'}
     </div>
@@ -536,8 +756,7 @@ function quoteRequestDetailPage({ user, qr, items, assignments, vendorsByCategor
     </div>`;
   }).join('');
 
-  const assignedVendorIds = new Set(assignments.map((a) => a.vendor_id));
-  const catBlocks = CATEGORIES.map((cat) => {
+  const catBlocks = Object.keys(vendorsByCategory).map((cat) => {
     const vs = vendorsByCategory[cat] || [];
     if (vs.length === 0) return '';
     const rows = vs.map((v) => {
@@ -548,7 +767,7 @@ function quoteRequestDetailPage({ user, qr, items, assignments, vendorsByCategor
         <span class="hint">${a ? (a.permission === 'submit' ? '견적입력 권한' : '조회 권한') : '미배정'}</span>
       </div>`;
     }).join('');
-    return `<div class="category-block"><div class="category-title">${cat}</div>${rows}</div>`;
+    return `<div class="category-block"><div class="category-title">${escapeHtml(cat)}</div>${rows}</div>`;
   }).join('');
 
   const body = `
@@ -687,9 +906,10 @@ function vendorQuoteRequestPage({ user, qr, items, permission, mySubmissions, fl
   `;
   return layout({ title: qr.title, body, user, flash });
 }
-const views = { CATEGORIES, loginPage, adminDashboard, adminVendorsPage, quoteRequestNewPage, quoteRequestDetailPage, vendorDashboard, vendorQuoteRequestPage };
+const views = { loginPage, adminDashboard, adminVendorsPage, adminCategoriesPage, quoteRequestNewPage, quoteRequestDetailPage, vendorDashboard, vendorQuoteRequestPage };
 
 // ===== server.js =====
+
 const PORT = process.env.PORT || 5007;
 const router = new Router();
 
@@ -721,6 +941,19 @@ function requireLogin(role) {
     return u;
   };
 }
+
+function sanitizeFilename(name) {
+  return String(name).replace(/[^a-zA-Z0-9._\-가-힣]/g, '_').slice(-80);
+}
+
+function saveUploadedFile(fileObj, prefix) {
+  if (!fileObj || !fileObj.filename) return null;
+  const stored = `${prefix}_${Date.now()}_${sanitizeFilename(fileObj.filename)}`;
+  fs.writeFileSync(path.join(UPLOAD_DIR, stored), fileObj.data);
+  return stored;
+}
+
+const CONTENT_TYPES = { '.pdf': 'application/pdf', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.png': 'image/png' };
 
 // ---------- 로그인 / 로그아웃 ----------
 router.get('/', (req, res) => {
@@ -825,31 +1058,97 @@ router.get('/admin', (req, res) => {
   res.end(views.adminDashboard({ user: u, requests }));
 });
 
+// ---------- 관리자: 카테고리 관리 ----------
+router.get('/admin/categories', (req, res) => {
+  const u = requireLogin('admin')(req, res);
+  if (!u) return;
+  const groups = { cat1: getCategoryOptions('cat1'), cat2: getCategoryOptions('cat2'), cat3: getCategoryOptions('cat3') };
+  res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+  res.end(views.adminCategoriesPage({ user: u, groups }));
+});
+
+router.post('/admin/categories', async (req, res) => {
+  const u = requireLogin('admin')(req, res);
+  if (!u) return;
+  const body = await parseBody(req);
+  const groupKey = ['cat1', 'cat2', 'cat3'].includes(body.group_key) ? body.group_key : null;
+  const label = (body.label || '').trim();
+  if (groupKey && label) {
+    const maxOrder = db.prepare('SELECT COALESCE(MAX(sort_order), -1) AS m FROM category_options WHERE group_key = ?').get(groupKey).m;
+    try {
+      db.prepare('INSERT INTO category_options (group_key, label, sort_order) VALUES (?, ?, ?)').run(groupKey, label, maxOrder + 1);
+    } catch (e) { /* 중복이면 무시 */ }
+  }
+  redirect(res, '/admin/categories');
+});
+
+router.post('/admin/categories/:id', async (req, res) => {
+  const u = requireLogin('admin')(req, res);
+  if (!u) return;
+  const id = Number(req.params.id);
+  const body = await parseBody(req);
+  const label = (body.label || '').trim();
+  if (label) {
+    try {
+      db.prepare('UPDATE category_options SET label = ? WHERE id = ?').run(label, id);
+    } catch (e) { /* 중복 라벨이면 무시 */ }
+  }
+  redirect(res, '/admin/categories');
+});
+
+router.post('/admin/categories/:id/delete', async (req, res) => {
+  const u = requireLogin('admin')(req, res);
+  if (!u) return;
+  const id = Number(req.params.id);
+  db.prepare('DELETE FROM category_options WHERE id = ?').run(id);
+  redirect(res, '/admin/categories');
+});
+
 // ---------- 관리자: 업체 관리 ----------
 router.get('/admin/vendors', (req, res) => {
   const u = requireLogin('admin')(req, res);
   if (!u) return;
-  const vendors = db.prepare('SELECT * FROM vendors ORDER BY category, name').all();
+  const vendors = db.prepare('SELECT * FROM vendors ORDER BY category1, name').all();
   let editVendor = null;
   if (req.query.edit) {
     editVendor = db.prepare('SELECT * FROM vendors WHERE id = ?').get(Number(req.query.edit));
   }
+  const cat1Options = getCategoryOptions('cat1').map((o) => o.label);
+  const cat2Options = getCategoryOptions('cat2').map((o) => o.label);
+  const cat3Options = getCategoryOptions('cat3').map((o) => o.label);
   res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
-  res.end(views.adminVendorsPage({ user: u, vendors, editVendor }));
+  res.end(views.adminVendorsPage({ user: u, vendors, editVendor, cat1Options, cat2Options, cat3Options }));
 });
 
 router.post('/admin/vendors', async (req, res) => {
   const u = requireLogin('admin')(req, res);
   if (!u) return;
   const body = await parseBody(req);
-  const { name, category, biz_reg_no, contact_name, contact_email, display_name, login_id, password, active } = body;
+  const files = req.files || {};
+  const {
+    name, category1, category2, category3, biz_reg_no,
+    contact_name, contact_email, display_name, login_id, password, active,
+    bank_name, account_number, account_holder,
+  } = body;
   if (!name || !login_id || !password) return redirect(res, '/admin/vendors');
   const exists = db.prepare('SELECT id FROM vendors WHERE login_id = ?').get(login_id);
   if (exists) return redirect(res, '/admin/vendors');
+
+  const bizRegFile = saveUploadedFile(files.biz_reg_file, 'biz');
+  const bankbookFile = saveUploadedFile(files.bankbook_file, 'bankbook');
+
   db.prepare(`
-    INSERT INTO vendors (name, category, biz_reg_no, contact_name, contact_email, login_id, password_hash, display_name, active, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `).run(name, category || '미분류', biz_reg_no || '', contact_name || '', contact_email || '', login_id, auth.hashPassword(password), display_name || contact_name || '', active === '0' ? 0 : 1, new Date().toISOString());
+    INSERT INTO vendors (
+      name, category1, category2, category3, biz_reg_no, contact_name, contact_email,
+      login_id, password_hash, display_name, bank_name, account_number, account_holder,
+      biz_reg_file, bankbook_file, active, created_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    name, category1 || '', category2 || '', category3 || '', biz_reg_no || '',
+    contact_name || '', contact_email || '', login_id, auth.hashPassword(password),
+    display_name || contact_name || '', bank_name || '', account_number || '', account_holder || '',
+    bizRegFile || '', bankbookFile || '', active === '0' ? 0 : 1, new Date().toISOString()
+  );
   redirect(res, '/admin/vendors');
 });
 
@@ -858,29 +1157,66 @@ router.post('/admin/vendors/:id', async (req, res) => {
   if (!u) return;
   const id = Number(req.params.id);
   const body = await parseBody(req);
-  const { name, category, biz_reg_no, contact_name, contact_email, display_name, login_id, password, active } = body;
+  const files = req.files || {};
+  const {
+    name, category1, category2, category3, biz_reg_no,
+    contact_name, contact_email, display_name, login_id, password, active,
+    bank_name, account_number, account_holder,
+  } = body;
   const current = db.prepare('SELECT * FROM vendors WHERE id = ?').get(id);
   if (!current) return redirect(res, '/admin/vendors');
   const passwordHash = password && password.trim() ? auth.hashPassword(password) : current.password_hash;
+
+  const bizRegFile = saveUploadedFile(files.biz_reg_file, `biz_${id}`) || current.biz_reg_file;
+  const bankbookFile = saveUploadedFile(files.bankbook_file, `bankbook_${id}`) || current.bankbook_file;
+
   db.prepare(`
-    UPDATE vendors SET name=?, category=?, biz_reg_no=?, contact_name=?, contact_email=?, login_id=?, password_hash=?, display_name=?, active=?
+    UPDATE vendors SET
+      name=?, category1=?, category2=?, category3=?, biz_reg_no=?, contact_name=?, contact_email=?,
+      login_id=?, password_hash=?, display_name=?, bank_name=?, account_number=?, account_holder=?,
+      biz_reg_file=?, bankbook_file=?, active=?
     WHERE id=?
-  `).run(name, category || '미분류', biz_reg_no || '', contact_name || '', contact_email || '', login_id, passwordHash, display_name || contact_name || '', active === '0' ? 0 : 1, id);
+  `).run(
+    name, category1 || '', category2 || '', category3 || '', biz_reg_no || '',
+    contact_name || '', contact_email || '', login_id, passwordHash,
+    display_name || contact_name || '', bank_name || '', account_number || '', account_holder || '',
+    bizRegFile || '', bankbookFile || '', active === '0' ? 0 : 1, id
+  );
   redirect(res, '/admin/vendors');
+});
+
+// 사업자등록증 / 통장사본 다운로드 (관리자 전용)
+router.get('/admin/vendors/file/:id/:type', (req, res) => {
+  const u = requireLogin('admin')(req, res);
+  if (!u) return;
+  const id = Number(req.params.id);
+  const type = req.params.type;
+  const vendor = db.prepare('SELECT * FROM vendors WHERE id = ?').get(id);
+  if (!vendor) { res.writeHead(404); return res.end('업체를 찾을 수 없습니다.'); }
+  const filename = type === 'biz' ? vendor.biz_reg_file : (type === 'bankbook' ? vendor.bankbook_file : null);
+  if (!filename) { res.writeHead(404); return res.end('첨부된 파일이 없습니다.'); }
+  const filePath = path.join(UPLOAD_DIR, filename);
+  if (!filePath.startsWith(UPLOAD_DIR) || !fs.existsSync(filePath)) { res.writeHead(404); return res.end('파일을 찾을 수 없습니다.'); }
+  const ext = path.extname(filename).toLowerCase();
+  const contentType = CONTENT_TYPES[ext] || 'application/octet-stream';
+  res.writeHead(200, { 'Content-Type': contentType, 'Content-Disposition': `inline; filename="${encodeURIComponent(filename)}"` });
+  fs.createReadStream(filePath).pipe(res);
 });
 
 // ---------- 관리자: 견적요청 생성 ----------
 router.get('/admin/quote-requests/new', (req, res) => {
   const u = requireLogin('admin')(req, res);
   if (!u) return;
-  const vendors = db.prepare('SELECT * FROM vendors WHERE active = 1 ORDER BY category, name').all();
+  const vendors = db.prepare('SELECT * FROM vendors WHERE active = 1 ORDER BY category1, name').all();
   const vendorsByCategory = {};
   for (const v of vendors) {
-    if (!vendorsByCategory[v.category]) vendorsByCategory[v.category] = [];
-    vendorsByCategory[v.category].push(v);
+    const key = v.category1 || '미분류';
+    if (!vendorsByCategory[key]) vendorsByCategory[key] = [];
+    vendorsByCategory[key].push(v);
   }
+  const cat1Options = getCategoryOptions('cat1').map((o) => o.label);
   res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
-  res.end(views.quoteRequestNewPage({ user: u, vendorsByCategory }));
+  res.end(views.quoteRequestNewPage({ user: u, vendorsByCategory, cat1Options }));
 });
 
 function toArray(v) {
@@ -933,12 +1269,13 @@ router.get('/admin/quote-requests/:id', (req, res) => {
   if (!qr) { res.writeHead(404); return res.end('견적요청을 찾을 수 없습니다.'); }
   const items = db.prepare('SELECT * FROM quote_items WHERE quote_request_id = ?').all(id);
   const assignments = db.prepare('SELECT * FROM vendor_assignments WHERE quote_request_id = ?').all(id);
-  const vendors = db.prepare('SELECT * FROM vendors ORDER BY category, name').all();
+  const vendors = db.prepare('SELECT * FROM vendors ORDER BY category1, name').all();
   const vendorsByCategory = {};
   for (const v of vendors) {
     if (!assignments.find((a) => a.vendor_id === v.id)) continue;
-    if (!vendorsByCategory[v.category]) vendorsByCategory[v.category] = [];
-    vendorsByCategory[v.category].push(v);
+    const key = v.category1 || '미분류';
+    if (!vendorsByCategory[key]) vendorsByCategory[key] = [];
+    vendorsByCategory[key].push(v);
   }
 
   const submissionsByItem = {};
