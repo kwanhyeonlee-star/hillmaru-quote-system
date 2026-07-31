@@ -1,7 +1,7 @@
 # 힐마루 견적관리 시스템
 
 ChatGPT 대화(V8~V10)에서 확인된 사양을 기반으로 새로 만든 견적관리 웹앱입니다.
-외부 패키지 없이 Node.js 표준 라이브러리(내장 `node:sqlite` 포함)만으로 동작하도록 만들었습니다.
+외부 패키지 없이 Node.js 표준 라이브러리(내장 `node:sqlite` 포함)만으로 동작하도록 만들었고, 배포 편의를 위해 `server.js` 파일 하나에 전체 로직이 들어 있습니다.
 
 ## 주요 기능
 - 관리자 / 업체 로그인 (역할 분리)
@@ -32,26 +32,19 @@ node server.js
 기본 접속 주소: http://localhost:5007
 기본 관리자 계정: `admin` / `admin1234` (로그인 후 반드시 비밀번호를 변경하세요 — 현재 버전은 관리자 비밀번호 변경 화면이 없어 필요 시 요청해 주세요)
 
-## 온라인 배포하기 (무료 티어 기준)
-이 앱은 SQLite 파일(`data/app.db`)에 데이터를 저장하므로, **디스크가 유지되는 호스팅**이 필요합니다.
+## 온라인 배포하기 (Render.com, 무료 티어 기준)
+이 앱은 SQLite 파일(`data/app.db`)에 데이터를 저장하므로 디스크가 유지되는 호스팅이 필요합니다.
 Vercel/Netlify의 서버리스 함수는 파일시스템이 매 요청마다 초기화되어 이 구조와 맞지 않습니다.
 
-추천: **Render.com** (Free 웹 서비스 + 무료 디스크 1GB 제공)
-1. 이 폴더를 GitHub 저장소로 올립니다.
-2. Render.com에서 New → Blueprint(render.yaml 포함) 또는 New → Web Service로 저장소를 연결합니다.
-3. Start Command: `node server.js` (render.yaml에 이미 설정되어 있습니다)
+1. Render.com에서 New → Blueprint(이 저장소의 `render.yaml`을 자동으로 읽습니다) 또는 New → Web Service로 이 저장소를 연결합니다.
+2. Start Command는 `node server.js` (render.yaml에 이미 설정됨), Build Command는 없어도 됩니다(외부 패키지 없음).
+3. 무료 디스크(1GB)를 `data` 경로에 연결해 DB가 재배포 후에도 유지되도록 합니다(render.yaml에 포함됨).
 4. 배포 후 발급되는 `https://xxxx.onrender.com` 주소로 어디서나 접속 가능합니다.
-
-계정 생성이나 배포 실행은 사용자분이 직접 진행해 주셔야 합니다. 화면을 보면서 함께 진행하고 싶으시면 말씀해 주세요.
 
 ## 폴더 구조
 ```
-server.js        서버 진입점 (라우팅 포함)
-lib/db.js         SQLite 스키마 및 초기화
-lib/auth.js        비밀번호 해시, 세션 처리
-lib/router.js       외부 프레임워크 없이 만든 최소 라우터
-lib/render.js       공통 레이아웃/유틸
-lib/views.js        화면별 HTML 렌더링
-public/style.css     스타일
-data/                SQLite DB 파일 저장 위치 (최초 실행 시 자동 생성)
+server.js       전체 서버 로직 (라우팅, 인증, DB 스키마, 화면 렌더링 포함 단일 파일)
+package.json     실행 설정
+render.yaml      Render.com 배포 설정
+data/            SQLite DB 파일 저장 위치 (최초 실행 시 자동 생성, 저장소에는 포함되지 않음)
 ```
