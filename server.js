@@ -6,6 +6,7 @@ const crypto = require('crypto');
 const querystring = require('querystring');
 const { URL } = require('url');
 const { DatabaseSync } = require('node:sqlite');
+const zlib = require('zlib');
 
 // ===== embedded CSS =====
 const STYLE_CSS = "* { box-sizing: border-box; }\nbody {\n  margin: 0;\n  font-family: -apple-system, \"Apple SD Gothic Neo\", \"Malgun Gothic\", \"Segoe UI\", sans-serif;\n  background: #f4f6f8;\n  color: #1f2937;\n  line-height: 1.5;\n}\na { color: #2563eb; text-decoration: none; }\na:hover { text-decoration: underline; }\n\n.topbar {\n  background: #111827;\n  color: #fff;\n}\n.topbar-inner {\n  max-width: 1100px;\n  margin: 0 auto;\n  padding: 14px 20px;\n  display: flex;\n  justify-content: space-between;\n  align-items: center;\n}\n.brand { color: #fff; font-weight: 700; font-size: 18px; }\n.topbar nav a { color: #d1d5db; margin-left: 14px; }\n.topbar nav a:hover { color: #fff; }\n.who { color: #9ca3af; font-size: 14px; }\n\n.container {\n  max-width: 1100px;\n  margin: 0 auto;\n  padding: 28px 20px 60px;\n}\n\n.footer {\n  text-align: center;\n  color: #9ca3af;\n  font-size: 13px;\n  padding: 20px;\n}\n\nh1 { font-size: 22px; margin: 0 0 18px; }\nh2 { font-size: 18px; margin: 28px 0 12px; }\nh3 { font-size: 15px; margin: 18px 0 8px; }\n\n.flash { padding: 10px 14px; border-radius: 8px; margin-bottom: 18px; font-size: 14px; }\n.flash.info { background: #dbeafe; color: #1e40af; }\n.flash.error { background: #fee2e2; color: #991b1b; }\n.flash.success { background: #dcfce7; color: #166534; }\n\n.card {\n  background: #fff;\n  border: 1px solid #e5e7eb;\n  border-radius: 10px;\n  padding: 20px;\n  margin-bottom: 18px;\n}\n\n.card-grid {\n  display: grid;\n  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));\n  gap: 16px;\n}\n\n.qr-card { display: block; color: inherit; }\n.qr-card:hover { text-decoration: none; border-color: #93c5fd; }\n.qr-title { font-weight: 700; font-size: 15px; margin-bottom: 6px; }\n.qr-status { display: inline-block; font-size: 12px; padding: 2px 8px; border-radius: 999px; margin-bottom: 10px; }\n.qr-status.selecting { background: #fef3c7; color: #92400e; }\n.qr-status.completed { background: #dcfce7; color: #166534; }\n.qr-status.open { background: #e0e7ff; color: #3730a3; }\n.qr-meta { font-size: 13px; color: #6b7280; margin: 2px 0; }\n.qr-total { margin-top: 10px; font-size: 15px; font-weight: 700; color: #111827; }\n.qr-progress-bar { height: 6px; background: #e5e7eb; border-radius: 999px; overflow: hidden; margin: 8px 0; }\n.qr-progress-fill { height: 100%; background: #2563eb; }\n\ntable { width: 100%; border-collapse: collapse; font-size: 14px; }\nth, td { padding: 8px 10px; border-bottom: 1px solid #e5e7eb; text-align: left; vertical-align: top; }\nth { background: #f9fafb; font-weight: 600; color: #374151; }\ntr.row-substitute { background: #fffbeb; }\ntr.row-lowest { outline: 2px solid #2563eb; outline-offset: -2px; }\ntr.row-selected { background: #ecfdf5; }\n.badge { display: inline-block; font-size: 11px; padding: 1px 7px; border-radius: 999px; font-weight: 600; }\n.badge.requested { background: #e0e7ff; color: #3730a3; }\n.badge.substitute { background: #fef3c7; color: #92400e; }\n.badge.lowest { background: #2563eb; color: #fff; margin-left: 6px; }\n.badge.selected { background: #059669; color: #fff; }\n\nform.inline { display: inline; }\nlabel { display: block; font-size: 13px; color: #4b5563; margin: 10px 0 4px; }\ninput[type=text], input[type=email], input[type=number], input[type=date], input[type=password], select, textarea {\n  width: 100%;\n  padding: 8px 10px;\n  border: 1px solid #d1d5db;\n  border-radius: 6px;\n  font-size: 14px;\n  font-family: inherit;\n}\ntextarea { resize: vertical; }\n.form-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px,1fr)); gap: 12px; }\nfieldset { border: 1px solid #e5e7eb; border-radius: 8px; margin: 14px 0; padding: 14px; }\nlegend { font-weight: 700; font-size: 13px; padding: 0 6px; color: #374151; }\n\nbutton, .btn {\n  display: inline-block;\n  background: #2563eb;\n  color: #fff;\n  border: none;\n  padding: 8px 14px;\n  border-radius: 6px;\n  font-size: 14px;\n  cursor: pointer;\n  text-decoration: none;\n}\nbutton:hover, .btn:hover { background: #1d4ed8; text-decoration: none; }\n.btn.secondary { background: #6b7280; }\n.btn.secondary:hover { background: #4b5563; }\n.btn.small { padding: 4px 10px; font-size: 12px; }\n.btn.danger { background: #dc2626; }\n.btn.danger:hover { background: #b91c1c; }\n.btn.ghost { background: transparent; border: 1px solid #d1d5db; color: #374151; }\n.btn.ghost:hover { background: #f3f4f6; }\n\n.category-block { border: 1px solid #e5e7eb; border-radius: 8px; padding: 12px 14px; margin-bottom: 12px; background: #fafafa; }\n.category-title { font-weight: 700; margin-bottom: 8px; }\n.vendor-row { display: flex; align-items: center; gap: 10px; padding: 4px 0; font-size: 14px; }\n.vendor-row .vname { flex: 1; }\n.bulk-btns { margin-bottom: 8px; }\n.bulk-btns button { margin-right: 6px; }\n\n.login-wrap { max-width: 380px; margin: 60px auto; }\n.login-tabs { display: flex; gap: 8px; margin-bottom: 16px; }\n.login-tabs a { flex: 1; text-align: center; padding: 10px; border-radius: 8px; background: #e5e7eb; color: #374151; font-weight: 600; }\n.login-tabs a.active { background: #2563eb; color: #fff; }\n\n.total-box { background: #111827; color: #fff; padding: 16px 20px; border-radius: 10px; margin-top: 16px; }\n.total-box .label { font-size: 13px; color: #9ca3af; }\n.total-box .value { font-size: 24px; font-weight: 800; }\n\n.hint { font-size: 12px; color: #9ca3af; }\n.section-actions { display: flex; justify-content: space-between; align-items: center; }\n";
@@ -265,11 +266,29 @@ CREATE TABLE IF NOT EXISTS category_options (
   UNIQUE(group_key, label)
 );
 
+CREATE TABLE IF NOT EXISTS sites (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL,
+  title_label TEXT DEFAULT '',
+  company_name TEXT DEFAULT '(주)동훈',
+  address TEXT DEFAULT '',
+  ceo_name TEXT DEFAULT '',
+  phone TEXT DEFAULT '',
+  biz_reg_no TEXT DEFAULT '',
+  item_type TEXT DEFAULT '',
+  biz_type TEXT DEFAULT '',
+  tax_email TEXT DEFAULT '',
+  onsite_contact TEXT DEFAULT '',
+  footer_label TEXT DEFAULT '',
+  sort_order INTEGER DEFAULT 0
+);
+
 CREATE TABLE IF NOT EXISTS quote_requests (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   title TEXT NOT NULL,
   submission_deadline TEXT,
   requested_delivery_date TEXT,
+  site_id INTEGER REFERENCES sites(id),
   status TEXT NOT NULL DEFAULT 'open',
   created_at TEXT NOT NULL
 );
@@ -332,6 +351,18 @@ addColumnIfMissing('account_number', "account_number TEXT DEFAULT ''");
 addColumnIfMissing('account_holder', "account_holder TEXT DEFAULT ''");
 addColumnIfMissing('biz_reg_file', "biz_reg_file TEXT DEFAULT ''");
 addColumnIfMissing('bankbook_file', "bankbook_file TEXT DEFAULT ''");
+addColumnIfMissing('address', "address TEXT DEFAULT ''");
+addColumnIfMissing('ceo_name', "ceo_name TEXT DEFAULT ''");
+addColumnIfMissing('phone', "phone TEXT DEFAULT ''");
+addColumnIfMissing('item_type', "item_type TEXT DEFAULT ''");
+addColumnIfMissing('biz_type', "biz_type TEXT DEFAULT ''");
+
+// quote_requests에 site_id 컬럼이 없던 예전 DB 대응
+const qrCols = db.prepare("PRAGMA table_info(quote_requests)").all().map((c) => c.name);
+if (!qrCols.includes('site_id')) {
+  db.exec('ALTER TABLE quote_requests ADD COLUMN site_id INTEGER REFERENCES sites(id)');
+}
+
 // final_selections에 reason 컬럼이 없던 예전 DB 대응
 const finalSelCols = db.prepare("PRAGMA table_info(final_selections)").all().map((c) => c.name);
 if (!finalSelCols.includes('reason')) {
@@ -363,12 +394,277 @@ seedCategoryGroup('cat1', ['코스', '일반관리', '시설']);
 seedCategoryGroup('cat2', ['저장품', '소모품', '코스 관리비']);
 seedCategoryGroup('cat3', []);
 
+// 사업장 기본값 시딩 (사업장이 하나도 없을 때만)
+const siteCount = db.prepare('SELECT COUNT(*) AS c FROM sites').get().c;
+if (siteCount === 0) {
+  const insertSite = db.prepare(`
+    INSERT INTO sites (name, title_label, company_name, address, ceo_name, phone, biz_reg_no, item_type, biz_type, tax_email, footer_label, sort_order)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  insertSite.run('힐마루 포천', '포천', '(주)동훈', '경기 포천시 영중면 금화봉4길 77', '김남연, 김태훈 (공동대표)', '1899-5800', '422-85-02210', '골프장', '서비스업', 'pcbill@donghoon.com', '주식회사동훈힐마루CC포천', 0);
+  insertSite.run('힐마루 창녕', '창녕', '(주)동훈', '경상남도 창녕군 장마면 영산계성로 469-195', '김남연, 김태훈 (공동대표)', '1899-5800', '608-85-29021', '골프장', '서비스', '', '주식회사동훈힐마루CC창녕', 1);
+}
+
 function getCategoryOptions(groupKey) {
   return db.prepare('SELECT * FROM category_options WHERE group_key = ? ORDER BY sort_order, id').all(groupKey);
 }
 
+function getSites() {
+  return db.prepare('SELECT * FROM sites ORDER BY sort_order, id').all();
+}
+
 module.exports.UPLOAD_DIR = UPLOAD_DIR;
 module.exports.getCategoryOptions = getCategoryOptions;
+module.exports.getSites = getSites;
+
+// ===== lib/zip.js =====
+// 외부 패키지 없이 zlib만으로 구현한 최소 ZIP 리더/라이터 (xlsx 편집용)
+
+function readUInt32LE(buf, off) { return buf.readUInt32LE(off); }
+function readUInt16LE(buf, off) { return buf.readUInt16LE(off); }
+
+// buffer(zip 전체) -> Map<파일명, Buffer(압축 해제된 내용)>
+function readZip(buffer) {
+  // EOCD(End Of Central Directory) 시그니처를 뒤에서부터 탐색
+  const EOCD_SIG = 0x06054b50;
+  let eocdOffset = -1;
+  for (let i = buffer.length - 22; i >= 0; i--) {
+    if (readUInt32LE(buffer, i) === EOCD_SIG) { eocdOffset = i; break; }
+  }
+  if (eocdOffset === -1) throw new Error('유효한 ZIP(EOCD)을 찾을 수 없습니다.');
+
+  const totalEntries = readUInt16LE(buffer, eocdOffset + 10);
+  const cdOffset = readUInt32LE(buffer, eocdOffset + 16);
+
+  const entries = new Map();
+  let ptr = cdOffset;
+  const CD_SIG = 0x02014b50;
+  for (let i = 0; i < totalEntries; i++) {
+    if (readUInt32LE(buffer, ptr) !== CD_SIG) throw new Error('중앙 디렉터리 항목이 올바르지 않습니다.');
+    const compMethod = readUInt16LE(buffer, ptr + 10);
+    const compSize = readUInt32LE(buffer, ptr + 20);
+    const nameLen = readUInt16LE(buffer, ptr + 28);
+    const extraLen = readUInt16LE(buffer, ptr + 30);
+    const commentLen = readUInt16LE(buffer, ptr + 32);
+    const lfhOffset = readUInt32LE(buffer, ptr + 42);
+    const fileName = buffer.slice(ptr + 46, ptr + 46 + nameLen).toString('utf8');
+
+    // 로컬 파일 헤더에서 실제 데이터 위치 계산
+    const lfhNameLen = readUInt16LE(buffer, lfhOffset + 26);
+    const lfhExtraLen = readUInt16LE(buffer, lfhOffset + 28);
+    const dataStart = lfhOffset + 30 + lfhNameLen + lfhExtraLen;
+    const rawData = buffer.slice(dataStart, dataStart + compSize);
+    const data = compMethod === 8 ? zlib.inflateRawSync(rawData) : rawData;
+    entries.set(fileName, data);
+
+    ptr += 46 + nameLen + extraLen + commentLen;
+  }
+  return entries;
+}
+
+// Map<파일명, Buffer> -> zip Buffer
+function writeZip(entriesMap) {
+  const localParts = [];
+  const centralParts = [];
+  let offset = 0;
+  const dosTime = 0;
+  const dosDate = 0x21; // 임의의 고정 날짜(1980-01-01 이후) - 실제 값 중요치 않음
+
+  for (const [name, content] of entriesMap.entries()) {
+    const nameBuf = Buffer.from(name, 'utf8');
+    const crc = zlib.crc32(content) >>> 0;
+    const compressed = zlib.deflateRawSync(content, { level: 6 });
+    const useStore = compressed.length >= content.length;
+    const method = useStore ? 0 : 8;
+    const dataToWrite = useStore ? content : compressed;
+
+    const lfh = Buffer.alloc(30);
+    lfh.writeUInt32LE(0x04034b50, 0);
+    lfh.writeUInt16LE(20, 4); // version needed
+    lfh.writeUInt16LE(0, 6); // flags
+    lfh.writeUInt16LE(method, 8);
+    lfh.writeUInt16LE(dosTime, 10);
+    lfh.writeUInt16LE(dosDate, 12);
+    lfh.writeUInt32LE(crc, 14);
+    lfh.writeUInt32LE(dataToWrite.length, 18);
+    lfh.writeUInt32LE(content.length, 22);
+    lfh.writeUInt16LE(nameBuf.length, 26);
+    lfh.writeUInt16LE(0, 28);
+
+    localParts.push(lfh, nameBuf, dataToWrite);
+
+    const cde = Buffer.alloc(46);
+    cde.writeUInt32LE(0x02014b50, 0);
+    cde.writeUInt16LE(20, 4); // version made by
+    cde.writeUInt16LE(20, 6); // version needed
+    cde.writeUInt16LE(0, 8); // flags
+    cde.writeUInt16LE(method, 10);
+    cde.writeUInt16LE(dosTime, 12);
+    cde.writeUInt16LE(dosDate, 14);
+    cde.writeUInt32LE(crc, 16);
+    cde.writeUInt32LE(dataToWrite.length, 20);
+    cde.writeUInt32LE(content.length, 24);
+    cde.writeUInt16LE(nameBuf.length, 28);
+    cde.writeUInt16LE(0, 30); // extra len
+    cde.writeUInt16LE(0, 32); // comment len
+    cde.writeUInt16LE(0, 34); // disk number start
+    cde.writeUInt16LE(0, 36); // internal attrs
+    cde.writeUInt32LE(0, 38); // external attrs
+    cde.writeUInt32LE(offset, 42); // local header offset
+
+    centralParts.push(cde, nameBuf);
+    offset += lfh.length + nameBuf.length + dataToWrite.length;
+  }
+
+  const centralDirStart = offset;
+  const centralBuf = Buffer.concat(centralParts);
+  const centralSize = centralBuf.length;
+
+  const eocd = Buffer.alloc(22);
+  eocd.writeUInt32LE(0x06054b50, 0);
+  eocd.writeUInt16LE(0, 4);
+  eocd.writeUInt16LE(0, 6);
+  eocd.writeUInt16LE(entriesMap.size, 8);
+  eocd.writeUInt16LE(entriesMap.size, 10);
+  eocd.writeUInt32LE(centralSize, 12);
+  eocd.writeUInt32LE(centralDirStart, 16);
+  eocd.writeUInt16LE(0, 20);
+
+  return Buffer.concat([...localParts, centralBuf, eocd]);
+}
+
+// ===== lib/po.js =====
+// 외부 패키지 없이 업로드된 발주서 템플릿(xlsx)의 특정 셀만 값을 바꿔 넣는 유틸
+
+function xmlEscape(str) {
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+function cellRegex(ref) {
+  // ref 뒤에 다른 참조(B10 같은게 B1을 잘못 매칭하는 것)를 방지하기 위해 "를 경계로 사용
+  return new RegExp(`<c r="${ref}"([^>]*?)(/>|>[\\s\\S]*?</c>)`);
+}
+
+function setCellText(xml, ref, text) {
+  const re = cellRegex(ref);
+  const m = xml.match(re);
+  if (!m) return xml; // 셀이 없으면 그냥 무시 (템플릿 구조가 다를 수 있음)
+  const attrs = m[1];
+  const styleMatch = attrs.match(/\ss="(\d+)"/);
+  const styleAttr = styleMatch ? ` s="${styleMatch[1]}"` : '';
+  const replacement = `<c r="${ref}"${styleAttr} t="inlineStr"><is><t xml:space="preserve">${xmlEscape(text)}</t></is></c>`;
+  return xml.replace(re, replacement);
+}
+
+function setCellNumber(xml, ref, num) {
+  const re = cellRegex(ref);
+  const m = xml.match(re);
+  if (!m) return xml;
+  const attrs = m[1];
+  const styleMatch = attrs.match(/\ss="(\d+)"/);
+  const styleAttr = styleMatch ? ` s="${styleMatch[1]}"` : '';
+  const replacement = `<c r="${ref}"${styleAttr}><v>${num}</v></c>`;
+  return xml.replace(re, replacement);
+}
+
+// JS Date -> 엑셀 날짜 일련번호 (1900 날짜 시스템, 윤년 버그 포함 기본 동작과 호환)
+function excelDateSerial(dateInput) {
+  if (!dateInput) return null;
+  const d = typeof dateInput === 'string' ? new Date(dateInput + 'T00:00:00Z') : dateInput;
+  if (isNaN(d.getTime())) return null;
+  const epoch = Date.UTC(1899, 11, 30); // 엑셀의 1900 날짜 체계 기준점
+  const days = Math.round((d.getTime() - epoch) / 86400000);
+  return days;
+}
+
+const BUYERS = {
+  '이관현 과장': { name: '이관현', dept: '기획감사팀', email: 'khlee@donghoon.com', phone: '010-2205-1324' },
+  '유환익 차장': { name: '유환익', dept: '기획감사팀', email: 'hiyoo@donghoon.com', phone: '010-3500-6370' },
+};
+
+const ITEM_ROW_START = 16;
+const ITEM_ROW_MAX = 36; // 템플릿에 준비된 품목 행 범위 (21행)
+
+function buildPurchaseOrder({ templateBuffer, site, vendor, buyerLabel, items, orderDateStr }) {
+  const entries = readZip(templateBuffer);
+  const sheetPath = 'xl/worksheets/sheet1.xml';
+  let xml = entries.get(sheetPath).toString('utf8');
+  const buyer = BUYERS[buyerLabel] || BUYERS['이관현 과장'];
+
+  // 제목 / 하단 사업장 표기
+  xml = setCellText(xml, 'B1', `발         주         서 (${site.title_label || ''})`);
+  xml = setCellText(xml, 'B53', Array.from(site.footer_label || '').join('   '));
+
+  // 발주자(사업장) 정보
+  xml = setCellText(xml, 'D5', site.company_name || '(주)동훈');
+  xml = setCellText(xml, 'I5', buyerLabel);
+  xml = setCellText(xml, 'D6', site.address || '');
+  xml = setCellText(xml, 'D7', site.ceo_name || '');
+  xml = setCellText(xml, 'I7', site.phone || '');
+  xml = setCellText(xml, 'D8', site.biz_reg_no || '');
+  xml = setCellText(xml, 'D9', site.item_type || '');
+  xml = setCellText(xml, 'I9', site.biz_type || '');
+  xml = setCellText(xml, 'L39', site.tax_email ? `전자세금계산서 주소  ▶  ${site.tax_email}` : '전자세금계산서 주소  ▶  ');
+  if (site.onsite_contact) {
+    xml = setCellText(xml, 'B38', `현장 입고 담당자 : ${site.onsite_contact}`);
+  }
+
+  // 담당자 서명/이메일/연락처 (선택된 구매담당 기준)
+  xml = setCellText(xml, 'N50', `서명 :  ${buyer.dept}  ${buyer.name}    (직인생략)`);
+  xml = setCellText(xml, 'I51', `발주자 Email : ${buyer.email}`);
+  xml = setCellText(xml, 'Q51', `H.P ${buyer.phone}`);
+
+  // 공급자(업체) 정보
+  xml = setCellText(xml, 'O5', vendor.name || '');
+  xml = setCellText(xml, 'T5', vendor.contact_name || '');
+  xml = setCellText(xml, 'O6', vendor.address || '');
+  xml = setCellText(xml, 'O7', vendor.ceo_name || '');
+  xml = setCellText(xml, 'T7', vendor.phone || '');
+  xml = setCellText(xml, 'O8', vendor.biz_reg_no || '');
+  xml = setCellText(xml, 'O9', vendor.item_type || '');
+  xml = setCellText(xml, 'T9', vendor.biz_type || '');
+  if (vendor.contact_email) {
+    xml = setCellText(xml, 'Q3', vendor.contact_email);
+  }
+
+  // 발주일 / 납기일
+  const orderSerial = excelDateSerial(orderDateStr || new Date().toISOString().slice(0, 10));
+  if (orderSerial !== null) xml = setCellNumber(xml, 'B12', orderSerial);
+  const deliverySerial = excelDateSerial(site.deliveryDateStr);
+  if (deliverySerial !== null) xml = setCellNumber(xml, 'G12', deliverySerial);
+
+  // 품목
+  items.forEach((it, idx) => {
+    const row = ITEM_ROW_START + idx;
+    if (row > ITEM_ROW_MAX) return; // 템플릿 행 초과분은 생략 (추후 확장 가능)
+    xml = setCellText(xml, `B${row}`, it.name || '');
+    xml = setCellText(xml, `H${row}`, it.spec || '');
+    xml = setCellText(xml, `L${row}`, it.unit || '');
+    xml = setCellNumber(xml, `N${row}`, it.qty || 0);
+    xml = setCellNumber(xml, `P${row}`, it.unitPrice || 0);
+  });
+
+  entries.set(sheetPath, Buffer.from(xml, 'utf8'));
+  // calcChain은 이제 실제 계산 순서와 안 맞아도 무방 - 엑셀이 열 때 재계산함. 제거해서 혹시 모를 충돌 방지.
+  entries.delete('xl/calcChain.xml');
+  // [Content_Types].xml / workbook rels에서 calcChain 참조 제거
+  if (entries.has('[Content_Types].xml')) {
+    let ct = entries.get('[Content_Types].xml').toString('utf8');
+    ct = ct.replace(/<Override[^>]*calcChain[^>]*\/>/, '');
+    entries.set('[Content_Types].xml', Buffer.from(ct, 'utf8'));
+  }
+  if (entries.has('xl/_rels/workbook.xml.rels')) {
+    let rels = entries.get('xl/_rels/workbook.xml.rels').toString('utf8');
+    rels = rels.replace(/<Relationship[^>]*calcChain[^>]*\/>/, '');
+    entries.set('xl/_rels/workbook.xml.rels', Buffer.from(rels, 'utf8'));
+  }
+
+  return writeZip(entries);
+}
 
 // ===== lib/render.js =====
 function escapeHtml(str) {
@@ -478,6 +774,7 @@ function adminDashboard({ user, requests, flash }) {
   <div class="section-actions" style="margin-bottom:14px;">
     <div><a href="/admin/vendors">업체 관리 →</a></div>
     <div><a href="/admin/categories">업체 카테고리 관리 →</a></div>
+    <div><a href="/admin/sites">사업장 관리 →</a></div>
   </div>
   ${requests.length === 0 ? '<div class="card">등록된 견적요청이 없습니다.</div>' : `<div class="card-grid">${cards}</div>`}
   `;
@@ -523,6 +820,20 @@ function adminVendorsPage({ user, vendors, flash, editVendor, cat1Options, cat2O
         <div><label>업체명</label><input type="text" name="name" required value="${editVendor ? escapeHtml(editVendor.name) : ''}"></div>
         <div><label>사업자번호</label><input type="text" name="biz_reg_no" value="${editVendor ? escapeHtml(editVendor.biz_reg_no) : ''}"></div>
       </div>
+
+      <fieldset>
+        <legend>발주서용 공급자 정보</legend>
+        <p class="hint">발주서 생성 시 '공급자' 란에 그대로 들어갑니다.</p>
+        <div class="form-row">
+          <div><label>주소</label><input type="text" name="address" value="${editVendor ? escapeHtml(editVendor.address) : ''}"></div>
+          <div><label>대표자</label><input type="text" name="ceo_name" value="${editVendor ? escapeHtml(editVendor.ceo_name) : ''}"></div>
+          <div><label>연락처</label><input type="text" name="phone" value="${editVendor ? escapeHtml(editVendor.phone) : ''}"></div>
+        </div>
+        <div class="form-row">
+          <div><label>종목</label><input type="text" name="item_type" value="${editVendor ? escapeHtml(editVendor.item_type) : ''}"></div>
+          <div><label>업태</label><input type="text" name="biz_type" value="${editVendor ? escapeHtml(editVendor.biz_type) : ''}"></div>
+        </div>
+      </fieldset>
 
       <fieldset>
         <legend>업체 카테고리</legend>
@@ -638,7 +949,60 @@ function adminCategoriesPage({ user, groups, flash }) {
   return layout({ title: '카테고리 관리', body, user, flash });
 }
 
-function quoteRequestNewPage({ user, vendorsByCategory, cat1Options, flash }) {
+function adminSitesPage({ user, sites, flash, editSite }) {
+  const rows = sites.map((st) => `
+    <tr>
+      <td>${escapeHtml(st.name)}</td>
+      <td>${escapeHtml(st.title_label)}</td>
+      <td>${escapeHtml(st.address)}</td>
+      <td>${escapeHtml(st.biz_reg_no)}</td>
+      <td><a class="btn small ghost" href="/admin/sites?edit=${st.id}">수정</a></td>
+    </tr>`).join('');
+
+  const body = `
+  <h1>사업장 관리</h1>
+  <p class="hint">여기서 등록한 사업장 정보는 발주서의 발주자(㈜동훈) 정보로 자동으로 채워집니다.</p>
+  <div class="card">
+    <table>
+      <thead><tr><th>사업장명</th><th>발주서 표기</th><th>주소</th><th>사업자번호</th><th></th></tr></thead>
+      <tbody>${rows || '<tr><td colspan="5">등록된 사업장이 없습니다.</td></tr>'}</tbody>
+    </table>
+  </div>
+
+  <h2>${editSite ? `사업장 수정 — ${escapeHtml(editSite.name)}` : '사업장 신규 등록'}</h2>
+  <div class="card">
+    <form method="POST" action="${editSite ? `/admin/sites/${editSite.id}` : '/admin/sites'}">
+      <div class="form-row">
+        <div><label>사업장명</label><input type="text" name="name" required value="${editSite ? escapeHtml(editSite.name) : ''}" placeholder="예) 힐마루 포천"></div>
+        <div><label>발주서 표기(괄호 안 지역명)</label><input type="text" name="title_label" required value="${editSite ? escapeHtml(editSite.title_label) : ''}" placeholder="예) 포천"></div>
+        <div><label>발주자 회사명</label><input type="text" name="company_name" value="${editSite ? escapeHtml(editSite.company_name) : '(주)동훈'}"></div>
+      </div>
+      <div class="form-row">
+        <div><label>주소</label><input type="text" name="address" value="${editSite ? escapeHtml(editSite.address) : ''}"></div>
+        <div><label>대표자</label><input type="text" name="ceo_name" value="${editSite ? escapeHtml(editSite.ceo_name) : ''}"></div>
+        <div><label>연락처</label><input type="text" name="phone" value="${editSite ? escapeHtml(editSite.phone) : ''}"></div>
+      </div>
+      <div class="form-row">
+        <div><label>사업자번호</label><input type="text" name="biz_reg_no" value="${editSite ? escapeHtml(editSite.biz_reg_no) : ''}"></div>
+        <div><label>종목</label><input type="text" name="item_type" value="${editSite ? escapeHtml(editSite.item_type) : ''}"></div>
+        <div><label>업태</label><input type="text" name="biz_type" value="${editSite ? escapeHtml(editSite.biz_type) : ''}"></div>
+      </div>
+      <div class="form-row">
+        <div><label>전자세금계산서 이메일</label><input type="email" name="tax_email" value="${editSite ? escapeHtml(editSite.tax_email) : ''}"></div>
+        <div><label>현장 입고 담당자 표시</label><input type="text" name="onsite_contact" value="${editSite ? escapeHtml(editSite.onsite_contact) : ''}" placeholder="예) 홍길동  010-0000-0000"></div>
+        <div><label>발주서 하단 표기</label><input type="text" name="footer_label" value="${editSite ? escapeHtml(editSite.footer_label) : ''}" placeholder="예) 주식회사동훈힐마루CC포천"></div>
+      </div>
+      <div style="margin-top:16px;">
+        <button type="submit">${editSite ? '수정 저장' : '등록'}</button>
+        ${editSite ? '<a class="btn ghost" href="/admin/sites" style="margin-left:8px;">취소</a>' : ''}
+      </div>
+    </form>
+  </div>
+  `;
+  return layout({ title: '사업장 관리', body, user, flash });
+}
+
+function quoteRequestNewPage({ user, vendorsByCategory, cat1Options, sites, flash }) {
   const groups = [...cat1Options, ...Object.keys(vendorsByCategory).filter((k) => !cat1Options.includes(k))];
   const catBlocks = groups.map((cat) => {
     const vs = vendorsByCategory[cat] || [];
@@ -656,6 +1020,7 @@ function quoteRequestNewPage({ user, vendorsByCategory, cat1Options, flash }) {
     </div>`;
   }).join('');
 
+  const siteOptions = (sites || []).map((st) => `<option value="${st.id}">${escapeHtml(st.name)}</option>`).join('');
   const body = `
   <h1>새 견적요청</h1>
   <form method="POST" action="/admin/quote-requests">
@@ -663,6 +1028,12 @@ function quoteRequestNewPage({ user, vendorsByCategory, cat1Options, flash }) {
       <label>견적요청 제목</label>
       <input type="text" name="title" required placeholder="예) 2026년 9월 코스관리 자재 견적">
       <div class="form-row">
+        <div><label>사업장</label>
+          <select name="site_id" required>
+            <option value="">선택</option>
+            ${siteOptions}
+          </select>
+        </div>
         <div><label>견적 제출 마감일</label><input type="date" name="submission_deadline"></div>
         <div><label>요청 납기일자</label><input type="date" name="requested_delivery_date"></div>
       </div>
@@ -702,7 +1073,7 @@ function quoteRequestNewPage({ user, vendorsByCategory, cat1Options, flash }) {
   return layout({ title: '새 견적요청', body, user, flash });
 }
 
-function quoteRequestEditPage({ user, qr, items, vendorsByCategory, assignments, cat1Options, flash }) {
+function quoteRequestEditPage({ user, qr, items, vendorsByCategory, assignments, cat1Options, sites, flash }) {
   const groups = [...cat1Options, ...Object.keys(vendorsByCategory).filter((k) => !cat1Options.includes(k))];
   const assignedViewIds = new Set(assignments.filter((a) => a.permission !== 'submit').map((a) => a.vendor_id));
   const assignedSubmitIds = new Set(assignments.filter((a) => a.permission === 'submit').map((a) => a.vendor_id));
@@ -747,6 +1118,7 @@ function quoteRequestEditPage({ user, qr, items, vendorsByCategory, assignments,
       <div style="align-self:end;"><label>&nbsp;</label><span class="hint">신규 품목</span></div>
     </div>`;
 
+  const siteOptions = (sites || []).map((st) => `<option value="${st.id}" ${Number(qr.site_id) === st.id ? 'selected' : ''}>${escapeHtml(st.name)}</option>`).join('');
   const body = `
   <h1>견적요청 수정 — ${escapeHtml(qr.title)}</h1>
   <p class="hint">이미 제출된 견적이 있는 품목을 삭제하면 해당 견적·선정 내역도 함께 삭제됩니다.</p>
@@ -755,6 +1127,12 @@ function quoteRequestEditPage({ user, qr, items, vendorsByCategory, assignments,
       <label>견적요청 제목</label>
       <input type="text" name="title" required value="${escapeHtml(qr.title)}">
       <div class="form-row">
+        <div><label>사업장</label>
+          <select name="site_id" required>
+            <option value="">선택</option>
+            ${siteOptions}
+          </select>
+        </div>
         <div><label>견적 제출 마감일</label><input type="date" name="submission_deadline" value="${escapeHtml(qr.submission_deadline || '')}"></div>
         <div><label>요청 납기일자</label><input type="date" name="requested_delivery_date" value="${escapeHtml(qr.requested_delivery_date || '')}"></div>
       </div>
@@ -824,7 +1202,7 @@ function submissionRow(s, { isLowest, isSelected }) {
     </tr>`;
 }
 
-function quoteRequestDetailPage({ user, qr, items, assignments, vendorsByCategory, submissionsByItem, selections, flash }) {
+function quoteRequestDetailPage({ user, qr, items, assignments, vendorsByCategory, submissionsByItem, selections, buyerLabels, hasSite, flash }) {
   const totalItems = items.length;
   const selectedCount = items.filter((it) => selections[it.id]).length;
   const selectedAmount = items.reduce((sum, it) => {
@@ -916,6 +1294,34 @@ function quoteRequestDetailPage({ user, qr, items, assignments, vendorsByCategor
       <div class="value">${money(selectedAmount)}</div>
     </div>
   </div>` : ''}
+
+  ${selectedCount > 0 ? `
+  <h2>업체별 발주서 생성</h2>
+  ${!hasSite ? `<div class="card"><p class="hint">발주서를 생성하려면 먼저 <a href="/admin/quote-requests/${qr.id}/edit">견적요청 수정</a>에서 사업장을 지정해주세요.</p></div>` : (() => {
+    const groups = {};
+    items.filter((it) => selections[it.id]).forEach((it) => {
+      const s = selections[it.id];
+      if (!groups[s.vendor_id]) groups[s.vendor_id] = { vendorName: s.vendor_name, rows: [] };
+      groups[s.vendor_id].rows.push({ itemName: it.item_name, product_name: s.product_name, qty: s.qty, unit: s.unit, unit_price: s.unit_price });
+    });
+    return Object.keys(groups).map((vid) => {
+      const g = groups[vid];
+      const itemRows = g.rows.map((r) => `<li>${escapeHtml(r.product_name)} · ${r.qty}${escapeHtml(r.unit)} · ${money(r.unit_price)}</li>`).join('');
+      const buyerOpts = (buyerLabels || []).map((b) => `<option value="${escapeHtml(b)}">${escapeHtml(b)}</option>`).join('');
+      const today = new Date().toISOString().slice(0, 10);
+      return `
+      <div class="card">
+        <h3 style="margin-top:0;">${escapeHtml(g.vendorName)}</h3>
+        <ul style="margin:4px 0 12px 20px;padding:0;font-size:14px;">${itemRows}</ul>
+        <form method="GET" action="/admin/quote-requests/${qr.id}/po/${vid}" style="display:flex;gap:10px;align-items:end;flex-wrap:wrap;">
+          <div><label>구매담당</label><select name="buyer">${buyerOpts}</select></div>
+          <div><label>발주일자</label><input type="date" name="orderDate" value="${today}"></div>
+          <button type="submit" class="btn small">발주서 다운로드</button>
+        </form>
+      </div>`;
+    }).join('');
+  })()}
+  ` : ''}
 
   <h2>배정된 업체</h2>
   <div class="card">${catBlocks || '<p class="hint">배정된 업체가 없습니다.</p>'}</div>
@@ -1011,9 +1417,17 @@ function vendorQuoteRequestPage({ user, qr, items, permission, mySubmissions, fl
   `;
   return layout({ title: qr.title, body, user, flash });
 }
-const views = { loginPage, adminDashboard, adminVendorsPage, adminCategoriesPage, quoteRequestNewPage, quoteRequestEditPage, quoteRequestDetailPage, vendorDashboard, vendorQuoteRequestPage };
+const views = { loginPage, adminDashboard, adminVendorsPage, adminCategoriesPage, adminSitesPage, quoteRequestNewPage, quoteRequestEditPage, quoteRequestDetailPage, vendorDashboard, vendorQuoteRequestPage };
 
 // ===== server.js =====
+const PO_TEMPLATE_PATH = path.join(__dirname, 'po_template.xlsx');
+let PO_TEMPLATE = null;
+try {
+  PO_TEMPLATE = fs.readFileSync(PO_TEMPLATE_PATH);
+} catch (e) {
+  console.warn('[경고] 발주서 템플릿(assets/po_template.xlsx)을 찾을 수 없습니다. 발주서 생성 기능이 동작하지 않습니다.');
+}
+
 
 const PORT = process.env.PORT || 5007;
 const router = new Router();
@@ -1213,6 +1627,48 @@ router.post('/admin/categories/:id/delete', async (req, res) => {
 });
 
 // ---------- 관리자: 업체 관리 ----------
+
+// ---------- 관리자: 사업장 관리 ----------
+router.get('/admin/sites', (req, res) => {
+  const u = requireLogin('admin')(req, res);
+  if (!u) return;
+  const sites = getSites();
+  let editSite = null;
+  if (req.query.edit) {
+    editSite = db.prepare('SELECT * FROM sites WHERE id = ?').get(Number(req.query.edit));
+  }
+  res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+  res.end(views.adminSitesPage({ user: u, sites, editSite }));
+});
+
+router.post('/admin/sites', async (req, res) => {
+  const u = requireLogin('admin')(req, res);
+  if (!u) return;
+  const body = await parseBody(req);
+  const { name, title_label, company_name, address, ceo_name, phone, biz_reg_no, item_type, biz_type, tax_email, onsite_contact, footer_label } = body;
+  if (!name || !title_label) return redirect(res, '/admin/sites');
+  const maxOrder = db.prepare('SELECT COALESCE(MAX(sort_order), -1) AS m FROM sites').get().m;
+  db.prepare(`
+    INSERT INTO sites (name, title_label, company_name, address, ceo_name, phone, biz_reg_no, item_type, biz_type, tax_email, onsite_contact, footer_label, sort_order)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(name, title_label, company_name || '(주)동훈', address || '', ceo_name || '', phone || '', biz_reg_no || '', item_type || '', biz_type || '', tax_email || '', onsite_contact || '', footer_label || '', maxOrder + 1);
+  redirect(res, '/admin/sites');
+});
+
+router.post('/admin/sites/:id', async (req, res) => {
+  const u = requireLogin('admin')(req, res);
+  if (!u) return;
+  const id = Number(req.params.id);
+  const body = await parseBody(req);
+  const { name, title_label, company_name, address, ceo_name, phone, biz_reg_no, item_type, biz_type, tax_email, onsite_contact, footer_label } = body;
+  db.prepare(`
+    UPDATE sites SET name=?, title_label=?, company_name=?, address=?, ceo_name=?, phone=?, biz_reg_no=?, item_type=?, biz_type=?, tax_email=?, onsite_contact=?, footer_label=?
+    WHERE id=?
+  `).run(name, title_label, company_name || '(주)동훈', address || '', ceo_name || '', phone || '', biz_reg_no || '', item_type || '', biz_type || '', tax_email || '', onsite_contact || '', footer_label || '', id);
+  redirect(res, '/admin/sites');
+});
+
+// ---------- 관리자: 업체 관리 ----------
 router.get('/admin/vendors', (req, res) => {
   const u = requireLogin('admin')(req, res);
   if (!u) return;
@@ -1237,6 +1693,7 @@ router.post('/admin/vendors', async (req, res) => {
     name, category1, category2, category3, biz_reg_no,
     contact_name, contact_email, display_name, login_id, password, active,
     bank_name, account_number, account_holder,
+    address, ceo_name, phone, item_type, biz_type,
   } = body;
   if (!name || !login_id || !password) return redirect(res, '/admin/vendors');
   const exists = db.prepare('SELECT id FROM vendors WHERE login_id = ?').get(login_id);
@@ -1249,13 +1706,14 @@ router.post('/admin/vendors', async (req, res) => {
     INSERT INTO vendors (
       name, category1, category2, category3, biz_reg_no, contact_name, contact_email,
       login_id, password_hash, display_name, bank_name, account_number, account_holder,
-      biz_reg_file, bankbook_file, active, created_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      biz_reg_file, bankbook_file, active, created_at, address, ceo_name, phone, item_type, biz_type
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     name, category1 || '', category2 || '', category3 || '', biz_reg_no || '',
     contact_name || '', contact_email || '', login_id, auth.hashPassword(password),
     display_name || contact_name || '', bank_name || '', account_number || '', account_holder || '',
-    bizRegFile || '', bankbookFile || '', active === '0' ? 0 : 1, new Date().toISOString()
+    bizRegFile || '', bankbookFile || '', active === '0' ? 0 : 1, new Date().toISOString(),
+    address || '', ceo_name || '', phone || '', item_type || '', biz_type || ''
   );
   redirect(res, '/admin/vendors');
 });
@@ -1270,6 +1728,7 @@ router.post('/admin/vendors/:id', async (req, res) => {
     name, category1, category2, category3, biz_reg_no,
     contact_name, contact_email, display_name, login_id, password, active,
     bank_name, account_number, account_holder,
+    address, ceo_name, phone, item_type, biz_type,
   } = body;
   const current = db.prepare('SELECT * FROM vendors WHERE id = ?').get(id);
   if (!current) return redirect(res, '/admin/vendors');
@@ -1282,13 +1741,14 @@ router.post('/admin/vendors/:id', async (req, res) => {
     UPDATE vendors SET
       name=?, category1=?, category2=?, category3=?, biz_reg_no=?, contact_name=?, contact_email=?,
       login_id=?, password_hash=?, display_name=?, bank_name=?, account_number=?, account_holder=?,
-      biz_reg_file=?, bankbook_file=?, active=?
+      biz_reg_file=?, bankbook_file=?, active=?, address=?, ceo_name=?, phone=?, item_type=?, biz_type=?
     WHERE id=?
   `).run(
     name, category1 || '', category2 || '', category3 || '', biz_reg_no || '',
     contact_name || '', contact_email || '', login_id, passwordHash,
     display_name || contact_name || '', bank_name || '', account_number || '', account_holder || '',
-    bizRegFile || '', bankbookFile || '', active === '0' ? 0 : 1, id
+    bizRegFile || '', bankbookFile || '', active === '0' ? 0 : 1,
+    address || '', ceo_name || '', phone || '', item_type || '', biz_type || '', id
   );
   redirect(res, '/admin/vendors');
 });
@@ -1323,8 +1783,9 @@ router.get('/admin/quote-requests/new', (req, res) => {
     vendorsByCategory[key].push(v);
   }
   const cat1Options = getCategoryOptions('cat1').map((o) => o.label);
+  const sites = getSites();
   res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
-  res.end(views.quoteRequestNewPage({ user: u, vendorsByCategory, cat1Options }));
+  res.end(views.quoteRequestNewPage({ user: u, vendorsByCategory, cat1Options, sites }));
 });
 
 function toArray(v) {
@@ -1340,10 +1801,10 @@ router.post('/admin/quote-requests', async (req, res) => {
   if (!title) return redirect(res, '/admin/quote-requests/new');
 
   const insertQr = db.prepare(`
-    INSERT INTO quote_requests (title, submission_deadline, requested_delivery_date, status, created_at)
-    VALUES (?, ?, ?, 'open', ?)
+    INSERT INTO quote_requests (title, submission_deadline, requested_delivery_date, site_id, status, created_at)
+    VALUES (?, ?, ?, ?, 'open', ?)
   `);
-  const info = insertQr.run(title, body.submission_deadline || null, body.requested_delivery_date || null, new Date().toISOString());
+  const info = insertQr.run(title, body.submission_deadline || null, body.requested_delivery_date || null, body.site_id ? Number(body.site_id) : null, new Date().toISOString());
   const qrId = info.lastInsertRowid;
 
   const names = toArray(body['item_name[]']);
@@ -1395,7 +1856,63 @@ router.get('/admin/quote-requests/:id', (req, res) => {
   }
 
   res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
-  res.end(views.quoteRequestDetailPage({ user: u, qr, items, assignments, vendorsByCategory, submissionsByItem, selections }));
+  res.end(views.quoteRequestDetailPage({ user: u, qr, items, assignments, vendorsByCategory, submissionsByItem, selections, buyerLabels: Object.keys(BUYERS), hasSite: !!qr.site_id }));
+});
+
+// ---------- 관리자: 업체별 발주서 생성 ----------
+router.get('/admin/quote-requests/:id/po/:vendorId', (req, res) => {
+  const u = requireLogin('admin')(req, res);
+  if (!u) return;
+  if (!PO_TEMPLATE) { res.writeHead(500); return res.end('발주서 템플릿을 찾을 수 없습니다.'); }
+
+  const qrId = Number(req.params.id);
+  const vendorId = Number(req.params.vendorId);
+  const qr = db.prepare('SELECT * FROM quote_requests WHERE id = ?').get(qrId);
+  if (!qr) { res.writeHead(404); return res.end('견적요청을 찾을 수 없습니다.'); }
+  if (!qr.site_id) { res.writeHead(400); return res.end('이 견적요청에는 사업장이 지정되어 있지 않습니다. 견적요청 수정에서 사업장을 지정해주세요.'); }
+  const site = db.prepare('SELECT * FROM sites WHERE id = ?').get(qr.site_id);
+  if (!site) { res.writeHead(404); return res.end('사업장 정보를 찾을 수 없습니다.'); }
+  const vendor = db.prepare('SELECT * FROM vendors WHERE id = ?').get(vendorId);
+  if (!vendor) { res.writeHead(404); return res.end('업체를 찾을 수 없습니다.'); }
+
+  const items = db.prepare('SELECT * FROM quote_items WHERE quote_request_id = ?').all(qrId);
+  const poItems = [];
+  for (const it of items) {
+    const { selected } = computeSelectionForItem(it.id);
+    if (selected && selected.vendor_id === vendorId) {
+      poItems.push({ name: selected.product_name, spec: selected.spec, qty: selected.qty, unit: selected.unit, unitPrice: selected.unit_price });
+    }
+  }
+  if (poItems.length === 0) { res.writeHead(404); return res.end('이 업체로 최종 선정된 품목이 없습니다.'); }
+
+  const buyerLabel = BUYERS[req.query.buyer] ? req.query.buyer : '이관현 과장';
+  const orderDateStr = /^\d{4}-\d{2}-\d{2}$/.test(req.query.orderDate || '') ? req.query.orderDate : new Date().toISOString().slice(0, 10);
+
+  let buf;
+  try {
+    buf = buildPurchaseOrder({
+      templateBuffer: PO_TEMPLATE,
+      site: { ...site, deliveryDateStr: qr.requested_delivery_date },
+      vendor,
+      buyerLabel,
+      items: poItems,
+      orderDateStr,
+    });
+  } catch (e) {
+    console.error(e);
+    res.writeHead(500, { 'Content-Type': 'text/plain; charset=utf-8' });
+    return res.end('발주서 생성 중 오류가 발생했습니다: ' + e.message);
+  }
+
+  const itemLabel = poItems.length > 1 ? `${poItems[0].name} 외 ${poItems.length - 1}건` : poItems[0].name;
+  const safe = (s) => String(s).replace(/[\\/:*?"<>|]/g, '_');
+  const filename = `발주서_${safe(site.title_label)}_${safe(itemLabel)}_${safe(vendor.name)}.xlsx`;
+
+  res.writeHead(200, {
+    'Content-Type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    'Content-Disposition': `attachment; filename*=UTF-8''${encodeURIComponent(filename)}`,
+  });
+  res.end(buf);
 });
 
 // ---------- 관리자: 견적요청 수정 ----------
@@ -1415,8 +1932,9 @@ router.get('/admin/quote-requests/:id/edit', (req, res) => {
     vendorsByCategory[key].push(v);
   }
   const cat1Options = getCategoryOptions('cat1').map((o) => o.label);
+  const sites = getSites();
   res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
-  res.end(views.quoteRequestEditPage({ user: u, qr, items, vendorsByCategory, assignments, cat1Options }));
+  res.end(views.quoteRequestEditPage({ user: u, qr, items, vendorsByCategory, assignments, cat1Options, sites }));
 });
 
 router.post('/admin/quote-requests/:id/edit', async (req, res) => {
@@ -1431,8 +1949,8 @@ router.post('/admin/quote-requests/:id/edit', async (req, res) => {
   if (!title) return redirect(res, `/admin/quote-requests/${id}/edit`);
 
   db.prepare(`
-    UPDATE quote_requests SET title = ?, submission_deadline = ?, requested_delivery_date = ? WHERE id = ?
-  `).run(title, body.submission_deadline || null, body.requested_delivery_date || null, id);
+    UPDATE quote_requests SET title = ?, submission_deadline = ?, requested_delivery_date = ?, site_id = ? WHERE id = ?
+  `).run(title, body.submission_deadline || null, body.requested_delivery_date || null, body.site_id ? Number(body.site_id) : null, id);
 
   // ---- 품목 동기화 ----
   const itemIds = toArray(body['item_id[]']);
