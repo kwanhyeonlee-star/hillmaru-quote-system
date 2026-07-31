@@ -283,6 +283,14 @@ CREATE TABLE IF NOT EXISTS sites (
   sort_order INTEGER DEFAULT 0
 );
 
+CREATE TABLE IF NOT EXISTS onsite_contacts (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  site_id INTEGER NOT NULL REFERENCES sites(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  phone TEXT DEFAULT '',
+  sort_order INTEGER DEFAULT 0
+);
+
 CREATE TABLE IF NOT EXISTS quote_requests (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   title TEXT NOT NULL,
@@ -413,9 +421,14 @@ function getSites() {
   return db.prepare('SELECT * FROM sites ORDER BY sort_order, id').all();
 }
 
+function getOnsiteContacts(siteId) {
+  return db.prepare('SELECT * FROM onsite_contacts WHERE site_id = ? ORDER BY sort_order, id').all(siteId);
+}
+
 module.exports.UPLOAD_DIR = UPLOAD_DIR;
 module.exports.getCategoryOptions = getCategoryOptions;
 module.exports.getSites = getSites;
+module.exports.getOnsiteContacts = getOnsiteContacts;
 
 // ===== lib/zip.js =====
 // 외부 패키지 없이 zlib만으로 구현한 최소 ZIP 리더/라이터 (xlsx 편집용)
@@ -571,6 +584,25 @@ function setCellNumber(xml, ref, num) {
   return xml.replace(re, replacement);
 }
 
+// 수식(<f>)이 있는 셀은 수식을 그대로 두고 캐시된 <v>만 우리가 계산한 값으로 갱신한다.
+// (뷰어에 따라 재계산을 하지 않는 경우에도 올바른 값이 바로 보이도록 하기 위함)
+function setCellComputed(xml, ref, value) {
+  const re = cellRegex(ref);
+  const m = xml.match(re);
+  if (!m) return xml;
+  const attrs = m[1];
+  const rest = m[2];
+  const styleMatch = attrs.match(/\ss="(\d+)"/);
+  const styleAttr = styleMatch ? ` s="${styleMatch[1]}"` : '';
+  let fPart = '';
+  if (rest !== '/>') {
+    const fMatch = rest.match(/<f[^>]*(?:\/>|>[\s\S]*?<\/f>)/);
+    if (fMatch) fPart = fMatch[0];
+  }
+  const replacement = `<c r="${ref}"${styleAttr}>${fPart}<v>${value}</v></c>`;
+  return xml.replace(re, replacement);
+}
+
 // JS Date -> 엑셀 날짜 일련번호 (1900 날짜 시스템, 윤년 버그 포함 기본 동작과 호환)
 function excelDateSerial(dateInput) {
   if (!dateInput) return null;
@@ -637,16 +669,32 @@ function buildPurchaseOrder({ templateBuffer, site, vendor, buyerLabel, items, o
   const deliverySerial = excelDateSerial(site.deliveryDateStr);
   if (deliverySerial !== null) xml = setCellNumber(xml, 'G12', deliverySerial);
 
-  // 품목
+  // 대금지불조건 (기본값)
+  xml = setCellText(xml, 'N12', '익월 말 현금 지급');
+
+  // 품목 + 공급가액(단가*수량) 계산
+  let totalSupply = 0;
   items.forEach((it, idx) => {
     const row = ITEM_ROW_START + idx;
     if (row > ITEM_ROW_MAX) return; // 템플릿 행 초과분은 생략 (추후 확장 가능)
+    const qty = it.qty || 0;
+    const unitPrice = it.unitPrice || 0;
+    const supplyAmount = qty * unitPrice;
+    totalSupply += supplyAmount;
     xml = setCellText(xml, `B${row}`, it.name || '');
     xml = setCellText(xml, `H${row}`, it.spec || '');
     xml = setCellText(xml, `L${row}`, it.unit || '');
-    xml = setCellNumber(xml, `N${row}`, it.qty || 0);
-    xml = setCellNumber(xml, `P${row}`, it.unitPrice || 0);
+    xml = setCellNumber(xml, `N${row}`, qty);
+    xml = setCellNumber(xml, `P${row}`, unitPrice);
+    xml = setCellComputed(xml, `S${row}`, supplyAmount);
   });
+
+  // 합계(공급가액/부가세/합계금액) 캐시 값 갱신 - 수식은 유지, 값만 즉시 보이도록 채움
+  const vat = Math.round(totalSupply * 0.1);
+  const grandTotal = totalSupply + vat;
+  xml = setCellComputed(xml, 'P37', totalSupply);
+  xml = setCellComputed(xml, 'P38', vat);
+  xml = setCellComputed(xml, 'K14', grandTotal);
 
   entries.set(sheetPath, Buffer.from(xml, 'utf8'));
   // calcChain은 이제 실제 계산 순서와 안 맞아도 무방 - 엑셀이 열 때 재계산함. 제거해서 혹시 모를 충돌 방지.
@@ -949,7 +997,7 @@ function adminCategoriesPage({ user, groups, flash }) {
   return layout({ title: '카테고리 관리', body, user, flash });
 }
 
-function adminSitesPage({ user, sites, flash, editSite }) {
+function adminSitesPage({ user, sites, flash, editSite, onsiteContacts }) {
   const rows = sites.map((st) => `
     <tr>
       <td>${escapeHtml(st.name)}</td>
@@ -998,6 +1046,28 @@ function adminSitesPage({ user, sites, flash, editSite }) {
       </div>
     </form>
   </div>
+
+  ${editSite ? `
+  <h2>${escapeHtml(editSite.name)} — 현장 입고 담당자 목록</h2>
+  <div class="card">
+    <p class="hint">발주서 생성 시 여기 등록된 담당자 중에서 선택할 수 있습니다.</p>
+    ${(onsiteContacts || []).map((c) => `
+    <div class="vendor-row">
+      <form method="POST" action="/admin/sites/contacts/${c.id}" class="inline" style="flex:1;display:flex;gap:8px;align-items:center;">
+        <input type="text" name="name" value="${escapeHtml(c.name)}" placeholder="이름" style="flex:1;">
+        <input type="text" name="phone" value="${escapeHtml(c.phone)}" placeholder="연락처" style="flex:1;">
+        <button type="submit" class="btn small">저장</button>
+      </form>
+      <form method="POST" action="/admin/sites/contacts/${c.id}/delete" class="inline" onsubmit="return confirm('삭제할까요?');">
+        <button type="submit" class="btn small danger">삭제</button>
+      </form>
+    </div>`).join('') || '<p class="hint">등록된 담당자가 없습니다.</p>'}
+    <form method="POST" action="/admin/sites/${editSite.id}/contacts" style="margin-top:12px;display:flex;gap:8px;">
+      <input type="text" name="name" placeholder="이름" required style="flex:1;">
+      <input type="text" name="phone" placeholder="연락처 (예: 010-0000-0000)" style="flex:1;">
+      <button type="submit" class="btn secondary small">추가</button>
+    </form>
+  </div>` : ''}
   `;
   return layout({ title: '사업장 관리', body, user, flash });
 }
@@ -1202,7 +1272,7 @@ function submissionRow(s, { isLowest, isSelected }) {
     </tr>`;
 }
 
-function quoteRequestDetailPage({ user, qr, items, assignments, vendorsByCategory, submissionsByItem, selections, buyerLabels, hasSite, flash }) {
+function quoteRequestDetailPage({ user, qr, items, assignments, vendorsByCategory, submissionsByItem, selections, buyerLabels, hasSite, onsiteContacts, flash }) {
   const totalItems = items.length;
   const selectedCount = items.filter((it) => selections[it.id]).length;
   const selectedAmount = items.reduce((sum, it) => {
@@ -1308,6 +1378,7 @@ function quoteRequestDetailPage({ user, qr, items, assignments, vendorsByCategor
       const g = groups[vid];
       const itemRows = g.rows.map((r) => `<li>${escapeHtml(r.product_name)} · ${r.qty}${escapeHtml(r.unit)} · ${money(r.unit_price)}</li>`).join('');
       const buyerOpts = (buyerLabels || []).map((b) => `<option value="${escapeHtml(b)}">${escapeHtml(b)}</option>`).join('');
+      const contactOpts = (onsiteContacts || []).map((c) => `<option value="${c.id}">${escapeHtml(c.name)}${c.phone ? ' · ' + escapeHtml(c.phone) : ''}</option>`).join('');
       const today = new Date().toISOString().slice(0, 10);
       return `
       <div class="card">
@@ -1316,6 +1387,12 @@ function quoteRequestDetailPage({ user, qr, items, assignments, vendorsByCategor
         <form method="GET" action="/admin/quote-requests/${qr.id}/po/${vid}" style="display:flex;gap:10px;align-items:end;flex-wrap:wrap;">
           <div><label>구매담당</label><select name="buyer">${buyerOpts}</select></div>
           <div><label>발주일자</label><input type="date" name="orderDate" value="${today}"></div>
+          <div><label>현장 입고 담당자</label>
+            <select name="onsiteContactId">
+              <option value="">선택 안 함(기본값)</option>
+              ${contactOpts}
+            </select>
+          </div>
           <button type="submit" class="btn small">발주서 다운로드</button>
         </form>
       </div>`;
@@ -1634,11 +1711,47 @@ router.get('/admin/sites', (req, res) => {
   if (!u) return;
   const sites = getSites();
   let editSite = null;
+  let onsiteContacts = [];
   if (req.query.edit) {
     editSite = db.prepare('SELECT * FROM sites WHERE id = ?').get(Number(req.query.edit));
+    if (editSite) onsiteContacts = getOnsiteContacts(editSite.id);
   }
   res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
-  res.end(views.adminSitesPage({ user: u, sites, editSite }));
+  res.end(views.adminSitesPage({ user: u, sites, editSite, onsiteContacts }));
+});
+
+router.post('/admin/sites/:id/contacts', async (req, res) => {
+  const u = requireLogin('admin')(req, res);
+  if (!u) return;
+  const siteId = Number(req.params.id);
+  const body = await parseBody(req);
+  const name = (body.name || '').trim();
+  if (name) {
+    const maxOrder = db.prepare('SELECT COALESCE(MAX(sort_order), -1) AS m FROM onsite_contacts WHERE site_id = ?').get(siteId).m;
+    db.prepare('INSERT INTO onsite_contacts (site_id, name, phone, sort_order) VALUES (?, ?, ?, ?)').run(siteId, name, body.phone || '', maxOrder + 1);
+  }
+  redirect(res, `/admin/sites?edit=${siteId}`);
+});
+
+router.post('/admin/sites/contacts/:contactId', async (req, res) => {
+  const u = requireLogin('admin')(req, res);
+  if (!u) return;
+  const contactId = Number(req.params.contactId);
+  const body = await parseBody(req);
+  const contact = db.prepare('SELECT * FROM onsite_contacts WHERE id = ?').get(contactId);
+  if (!contact) { res.writeHead(404); return res.end('담당자를 찾을 수 없습니다.'); }
+  db.prepare('UPDATE onsite_contacts SET name = ?, phone = ? WHERE id = ?').run(body.name || contact.name, body.phone || '', contactId);
+  redirect(res, `/admin/sites?edit=${contact.site_id}`);
+});
+
+router.post('/admin/sites/contacts/:contactId/delete', async (req, res) => {
+  const u = requireLogin('admin')(req, res);
+  if (!u) return;
+  const contactId = Number(req.params.contactId);
+  const contact = db.prepare('SELECT * FROM onsite_contacts WHERE id = ?').get(contactId);
+  if (!contact) { res.writeHead(404); return res.end('담당자를 찾을 수 없습니다.'); }
+  db.prepare('DELETE FROM onsite_contacts WHERE id = ?').run(contactId);
+  redirect(res, `/admin/sites?edit=${contact.site_id}`);
 });
 
 router.post('/admin/sites', async (req, res) => {
@@ -1855,8 +1968,9 @@ router.get('/admin/quote-requests/:id', (req, res) => {
     if (selected) selections[it.id] = selected;
   }
 
+  const onsiteContacts = qr.site_id ? getOnsiteContacts(qr.site_id) : [];
   res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
-  res.end(views.quoteRequestDetailPage({ user: u, qr, items, assignments, vendorsByCategory, submissionsByItem, selections, buyerLabels: Object.keys(BUYERS), hasSite: !!qr.site_id }));
+  res.end(views.quoteRequestDetailPage({ user: u, qr, items, assignments, vendorsByCategory, submissionsByItem, selections, buyerLabels: Object.keys(BUYERS), hasSite: !!qr.site_id, onsiteContacts }));
 });
 
 // ---------- 관리자: 업체별 발주서 생성 ----------
@@ -1888,11 +2002,17 @@ router.get('/admin/quote-requests/:id/po/:vendorId', (req, res) => {
   const buyerLabel = BUYERS[req.query.buyer] ? req.query.buyer : '이관현 과장';
   const orderDateStr = /^\d{4}-\d{2}-\d{2}$/.test(req.query.orderDate || '') ? req.query.orderDate : new Date().toISOString().slice(0, 10);
 
+  let effectiveOnsiteContact = site.onsite_contact || '';
+  if (req.query.onsiteContactId) {
+    const contact = db.prepare('SELECT * FROM onsite_contacts WHERE id = ? AND site_id = ?').get(Number(req.query.onsiteContactId), site.id);
+    if (contact) effectiveOnsiteContact = contact.phone ? `${contact.name}  ${contact.phone}` : contact.name;
+  }
+
   let buf;
   try {
     buf = buildPurchaseOrder({
       templateBuffer: PO_TEMPLATE,
-      site: { ...site, deliveryDateStr: qr.requested_delivery_date },
+      site: { ...site, onsite_contact: effectiveOnsiteContact, deliveryDateStr: qr.requested_delivery_date },
       vendor,
       buyerLabel,
       items: poItems,
