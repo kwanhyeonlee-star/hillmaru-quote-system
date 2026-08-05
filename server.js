@@ -704,6 +704,56 @@ function xlsxRowIsEmpty(row) {
 return !row || row.every((v) => !v || !String(v).trim());
 }
 
+// ---- 엑셀 "쓰기" (업로드용 빈 양식 다운로드) ----
+// 0-based 열 인덱스 -> 엑셀 열 문자 (0->A, 25->Z, 26->AA ...)
+function xlsxColLetter(idx) {
+let n = idx + 1;
+let s = '';
+while (n > 0) {
+const rem = (n - 1) % 26;
+s = String.fromCharCode(65 + rem) + s;
+n = Math.floor((n - 1) / 26);
+}
+return s;
+}
+
+function xlsxCellInline(ref, text) {
+const safe = String(text == null ? '' : text)
+.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+return `<c r="${ref}" t="inlineStr"><is><t xml:space="preserve">${safe}</t></is></c>`;
+}
+
+// headers: 문자열 배열(1행), exampleRows: 문자열 배열의 배열(2행부터, 작성 예시) -> 최소한의 유효한 .xlsx Buffer
+function buildTemplateXlsx(headers, exampleRows) {
+exampleRows = exampleRows || [];
+const rowsXml = [`<row r="1">${headers.map((h, i) => xlsxCellInline(`${xlsxColLetter(i)}1`, h)).join('')}</row>`];
+exampleRows.forEach((row, rIdx) => {
+const rn = rIdx + 2;
+rowsXml.push(`<row r="${rn}">${row.map((v, i) => xlsxCellInline(`${xlsxColLetter(i)}${rn}`, v)).join('')}</row>`);
+});
+const sheetXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData>${rowsXml.join('')}</sheetData></worksheet>`;
+const contentTypes = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/></Types>`;
+const rootRels = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>`;
+const workbookXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="Sheet1" sheetId="1" r:id="rId1"/></sheets></workbook>`;
+const workbookRels = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/></Relationships>`;
+const entries = new Map();
+entries.set('[Content_Types].xml', Buffer.from(contentTypes, 'utf8'));
+entries.set('_rels/.rels', Buffer.from(rootRels, 'utf8'));
+entries.set('xl/workbook.xml', Buffer.from(workbookXml, 'utf8'));
+entries.set('xl/_rels/workbook.xml.rels', Buffer.from(workbookRels, 'utf8'));
+entries.set('xl/worksheets/sheet1.xml', Buffer.from(sheetXml, 'utf8'));
+return writeZip(entries);
+}
+
+function sendXlsxTemplate(res, filename, headers, exampleRows) {
+const buf = buildTemplateXlsx(headers, exampleRows);
+res.writeHead(200, {
+'Content-Type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+'Content-Disposition': `attachment; filename*=UTF-8''${encodeURIComponent(filename)}`,
+});
+res.end(buf);
+}
+
 // ===== lib/po.js =====
 // 외부 패키지 없이 업로드된 발주서 템플릿(xlsx)의 특정 셀만 값을 바꿔 넣는 유틸
 
@@ -1140,10 +1190,11 @@ const body = `
 
 <h2>엑셀로 업체 일괄 등록</h2>
 <div class="card">
+<p class="hint"><a href="/admin/vendors/template">↓ 등록 양식 다운로드(.xlsx)</a> — 양식을 내려받아 작성한 뒤 업로드해주세요.</p>
 <form method="POST" action="/admin/vendors/import" enctype="multipart/form-data">
 <label>업체 목록 엑셀(.xlsx)</label>
 <input type="file" name="vendors_excel" accept=".xlsx" required>
-<p class="hint">1행은 머릿글로 건너뜁니다. 컬럼 순서: A=업체명, B=사업자번호, C=담당자명, D=담당자이메일, E=로그인아이디, F=비밀번호, G=카테고리1, H=카테고리2, I=카테고리3, J=주소, K=대표자, L=연락처, M=종목, N=업태, O=은행명, P=계좌번호, Q=예금주. 이미 있는 로그인아이디는 건너뜁니다.</p>
+<p class="hint">1행은 머릿글로 건너뜁니다. 이미 있는 로그인아이디는 건너뜁니다.</p>
 <button type="submit" class="btn secondary">일괄 등록</button>
 </form>
 </div>
@@ -1281,10 +1332,11 @@ const body = `
 ${blocks}
 <div class="card">
 <h3 style="margin-top:0;">엑셀로 카테고리 일괄 추가</h3>
+<p class="hint"><a href="/admin/categories/template">↓ 등록 양식 다운로드(.xlsx)</a> — 양식을 내려받아 작성한 뒤 업로드해주세요.</p>
 <form method="POST" action="/admin/categories/import" enctype="multipart/form-data">
 <label>카테고리 목록 엑셀(.xlsx)</label>
 <input type="file" name="categories_excel" accept=".xlsx" required>
-<p class="hint">1행은 머릿글로 건너뜁니다. 컬럼 순서: A=구분(cat1 또는 카테고리1 / cat2 또는 카테고리2 / cat3 또는 카테고리3), B=값</p>
+<p class="hint">1행은 머릿글로 건너뜁니다. 구분 칸에는 "카테고리1"/"카테고리2"/"카테고리3" 중 하나를 적어주세요.</p>
 <button type="submit" class="btn secondary">일괄 추가</button>
 </form>
 </div>
@@ -1315,10 +1367,11 @@ const body = `
 
 <h2>엑셀로 사업장 일괄 등록</h2>
 <div class="card">
+<p class="hint"><a href="/admin/sites/template">↓ 등록 양식 다운로드(.xlsx)</a> — 양식을 내려받아 작성한 뒤 업로드해주세요.</p>
 <form method="POST" action="/admin/sites/import" enctype="multipart/form-data">
 <label>사업장 목록 엑셀(.xlsx)</label>
 <input type="file" name="sites_excel" accept=".xlsx" required>
-<p class="hint">1행은 머릿글로 건너뜁니다. 컬럼 순서: A=사업장명, B=발주서표기, C=발주자회사명, D=주소, E=대표자, F=연락처, G=사업자번호, H=종목, I=업태, J=전자세금계산서이메일, K=현장입고담당자표시, L=발주서하단표기.</p>
+<p class="hint">1행은 머릿글로 건너뜁니다.</p>
 <button type="submit" class="btn secondary">일괄 등록</button>
 </form>
 </div>
@@ -1432,8 +1485,9 @@ ${siteOptions}
 <button type="button" class="btn secondary small" onclick="addItemRow()">+ 품목 추가</button>
 <div style="margin-top:14px;">
 <label>또는 엑셀로 품목 일괄 등록</label>
+<p class="hint"><a href="/admin/quote-requests/items-template">↓ 등록 양식 다운로드(.xlsx)</a></p>
 <input type="file" name="items_excel" accept=".xlsx">
-<p class="hint">엑셀 업로드 시 위에 직접 입력한 품목과 함께 등록됩니다. 컬럼 순서(1행은 머릿글): A=품목명, B=규격, C=수량, D=단위</p>
+<p class="hint">엑셀 업로드 시 위에 직접 입력한 품목과 함께 등록됩니다.</p>
 </div>
 </div>
 
@@ -1535,8 +1589,9 @@ ${itemRows}
 <button type="button" class="btn secondary small" onclick="addItemRow()">+ 품목 추가</button>
 <div style="margin-top:14px;">
 <label>또는 엑셀로 품목 추가</label>
+<p class="hint"><a href="/admin/quote-requests/items-template">↓ 등록 양식 다운로드(.xlsx)</a></p>
 <input type="file" name="items_excel" accept=".xlsx">
-<p class="hint">엑셀 업로드 시 기존 품목은 유지되고 새 품목으로 추가됩니다. 컬럼 순서(1행은 머릿글): A=품목명, B=규격, C=수량, D=단위</p>
+<p class="hint">엑셀 업로드 시 기존 품목은 유지되고 새 품목으로 추가됩니다.</p>
 </div>
 </div>
 
@@ -1816,10 +1871,11 @@ const body = `
 ${canSubmit ? `
 <div class="card">
 <h3 style="margin-top:0;">엑셀로 견적 일괄 제출</h3>
+<p class="hint"><a href="/vendor/quote-requests/${qr.id}/submissions-template">↓ 이 견적요청의 제출 양식 다운로드(.xlsx)</a> — 요청 품목명이 미리 채워져 있습니다. 단가 등만 입력해서 올려주세요.</p>
 <form method="POST" action="/vendor/quote-requests/${qr.id}/submissions/import" enctype="multipart/form-data">
 <label>견적 엑셀(.xlsx)</label>
 <input type="file" name="submissions_excel" accept=".xlsx" required>
-<p class="hint">1행은 머릿글로 건너뜁니다. 컬럼 순서: A=품목명(위 요청 품목명과 동일하게 입력), B=구분(요청품/대체품, 비워두면 요청품), C=제안품목명, D=규격, E=수량, F=단위, G=단가, H=납기일자(YYYY-MM-DD), I=제조사, J=비고 또는 대체 사유</p>
+<p class="hint">1행은 머릿글로 건너뜁니다. 대체품을 제안할 경우 구분 칸에 "대체품"이라고 적어주세요.</p>
 <button type="submit" class="btn secondary">일괄 제출</button>
 </form>
 </div>` : ''}
@@ -2115,6 +2171,15 @@ if (v === 'cat3' || v.includes('3')) return 'cat3';
 return null;
 }
 
+router.get('/admin/categories/template', (req, res) => {
+const u = requireLogin('admin')(req, res);
+if (!u) return;
+sendXlsxTemplate(res, '카테고리_일괄추가_양식.xlsx',
+['구분', '값'],
+[['카테고리1', '예시카테고리']]
+);
+});
+
 router.post('/admin/categories/import', async (req, res) => {
 const u = requireLogin('admin')(req, res);
 if (!u) return;
@@ -2219,6 +2284,15 @@ db.prepare('DELETE FROM onsite_contacts WHERE id = ?').run(contactId);
 redirect(res, `/admin/sites?edit=${contact.site_id}`);
 });
 
+router.get('/admin/sites/template', (req, res) => {
+const u = requireLogin('admin')(req, res);
+if (!u) return;
+sendXlsxTemplate(res, '사업장_일괄등록_양식.xlsx',
+['사업장명', '발주서표기', '발주자회사명', '주소', '대표자', '연락처', '사업자번호', '종목', '업태', '전자세금계산서이메일', '현장입고담당자표시', '발주서하단표기'],
+[['힐마루 예시', '예시', '(주)동훈', '경기 ○○시', '홍길동', '1899-0000', '000-00-00000', '골프장', '서비스업', 'bill@donghoon.com', '홍길동 010-0000-0000', '주식회사동훈힐마루예시']]
+);
+});
+
 router.post('/admin/sites/import', async (req, res) => {
 const u = requireLogin('admin')(req, res);
 if (!u) return;
@@ -2291,6 +2365,15 @@ const cat2Options = getCategoryOptions('cat2').map((o) => o.label);
 const cat3Options = getCategoryOptions('cat3').map((o) => o.label);
 res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
 res.end(views.adminVendorsPage({ user: u, vendors, editVendor, cat1Options, cat2Options, cat3Options }));
+});
+
+router.get('/admin/vendors/template', (req, res) => {
+const u = requireLogin('admin')(req, res);
+if (!u) return;
+sendXlsxTemplate(res, '업체_일괄등록_양식.xlsx',
+['업체명', '사업자번호', '담당자명', '담당자이메일', '로그인아이디', '비밀번호', '카테고리1', '카테고리2', '카테고리3', '주소', '대표자', '연락처', '종목', '업태', '은행명', '계좌번호', '예금주'],
+[['예시상사', '123-45-67890', '김담당', 'vendor@example.com', 'vendor01', 'pass1234', '코스', '', '', '서울시 ○○구', '홍길동', '010-0000-0000', '도매', '서비스업', '국민은행', '123456-78-901234', '예시상사']]
+);
 });
 
 router.post('/admin/vendors/import', async (req, res) => {
@@ -2435,6 +2518,15 @@ const cat1Options = getCategoryOptions('cat1').map((o) => o.label);
 const sites = getSites();
 res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
 res.end(views.quoteRequestNewPage({ user: u, vendorsByCategory, cat1Options, sites }));
+});
+
+router.get('/admin/quote-requests/items-template', (req, res) => {
+const u = requireLogin('admin')(req, res);
+if (!u) return;
+sendXlsxTemplate(res, '견적요청_품목_일괄등록_양식.xlsx',
+['품목명', '규격', '수량', '단위'],
+[['예) 비료', '20kg', '10', '포']]
+);
 });
 
 function toArray(v) {
@@ -2790,6 +2882,20 @@ body.substitute_reason || '', body.note || '', new Date().toISOString()
 notifyManagerOfSubmission(req, id, u).catch(() => {});
 
 redirect(res, `/vendor/quote-requests/${id}`);
+});
+
+router.get('/vendor/quote-requests/:id/submissions-template', (req, res) => {
+const u = requireLogin('vendor')(req, res);
+if (!u) return;
+const id = Number(req.params.id);
+const assign = db.prepare('SELECT * FROM vendor_assignments WHERE quote_request_id = ? AND vendor_id = ?').get(id, u.userId);
+if (!assign) { res.writeHead(403); return res.end('접근 권한이 없습니다.'); }
+const items = db.prepare('SELECT * FROM quote_items WHERE quote_request_id = ?').all(id);
+const rows = items.map((it) => [it.item_name, '요청품', it.item_name, it.spec || '', String(it.qty), it.unit || '', '', '', '', '']);
+sendXlsxTemplate(res, '견적_일괄제출_양식.xlsx',
+['품목명', '구분', '제안품목명', '규격', '수량', '단위', '단가', '납기일자', '제조사', '비고'],
+rows.length ? rows : [['예) 비료', '요청품', '비료', '20kg', '10', '포', '15000', '2026-09-01', '한국비료', '']]
+);
 });
 
 router.post('/vendor/quote-requests/:id/submissions/import', async (req, res) => {
