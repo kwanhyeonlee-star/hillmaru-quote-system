@@ -5,7 +5,7 @@ const path = require('path');
 const crypto = require('crypto');
 const querystring = require('querystring');
 const { URL } = require('url');
-const { DatabaseSync } = require('node:sqlite');
+const { createClient } = require('@libsql/client');
 const zlib = require('zlib');
 
 // ===== embedded CSS =====
@@ -275,17 +275,43 @@ const DB_PATH = path.join(DATA_DIR, 'app.db');
 const UPLOAD_DIR = path.join(DATA_DIR, 'uploads');
 if (!fs.existsSync(UPLOAD_DIR)) fs.mkdirSync(UPLOAD_DIR, { recursive: true });
 
-const db = new DatabaseSync(DB_PATH);
-db.exec('PRAGMA foreign_keys = ON;');
+// Turso(libSQL) 클라이언트. TURSO_DATABASE_URL이 없으면(로컬 개발) 로컬 파일 DB로 폴백한다.
+const db = createClient({
+  url: process.env.TURSO_DATABASE_URL || 'file:' + DB_PATH,
+  authToken: process.env.TURSO_AUTH_TOKEN,
+});
 
-db.exec(`
+// node:sqlite의 DatabaseSync.prepare(sql).get/all/run(...) 패턴과 호환되도록 만든
+// 얇은 비동기 호환 레이어. 기존 호출부는 db.prepare(sql).get(...)/.all(...)/.run(...) 형태를
+// 그대로 유지하고 앞에 await만 붙이면 되도록 하기 위함.
+db.prepare = function dbPrepare(sql) {
+  return {
+    get: async (...params) => {
+      const r = await db.execute({ sql, args: params });
+      return r.rows[0];
+    },
+    all: async (...params) => {
+      const r = await db.execute({ sql, args: params });
+      return r.rows;
+    },
+    run: async (...params) => {
+      const r = await db.execute({ sql, args: params });
+      return { lastInsertRowid: r.lastInsertRowid, changes: Number(r.rowsAffected) };
+    },
+  };
+};
+
+// DB 스키마 생성 / 마이그레이션 / 기본 데이터 시딩. 서버가 listen을 시작하기 전에 await로 호출된다.
+async function initDb() {
+await db.execute('PRAGMA foreign_keys = ON;');
+
+await db.executeMultiple(`
 CREATE TABLE IF NOT EXISTS admins (
 id INTEGER PRIMARY KEY AUTOINCREMENT,
 login_id TEXT UNIQUE NOT NULL,
 password_hash TEXT NOT NULL,
 display_name TEXT NOT NULL
 );
-
 CREATE TABLE IF NOT EXISTS vendors (
 id INTEGER PRIMARY KEY AUTOINCREMENT,
 name TEXT NOT NULL,
@@ -306,7 +332,6 @@ bankbook_file TEXT DEFAULT '',
 active INTEGER NOT NULL DEFAULT 1,
 created_at TEXT NOT NULL
 );
-
 CREATE TABLE IF NOT EXISTS category_options (
 id INTEGER PRIMARY KEY AUTOINCREMENT,
 group_key TEXT NOT NULL, -- cat1 | cat2 | cat3
@@ -314,7 +339,6 @@ label TEXT NOT NULL,
 sort_order INTEGER NOT NULL DEFAULT 0,
 UNIQUE(group_key, label)
 );
-
 CREATE TABLE IF NOT EXISTS sites (
 id INTEGER PRIMARY KEY AUTOINCREMENT,
 name TEXT NOT NULL,
@@ -331,7 +355,6 @@ onsite_contact TEXT DEFAULT '',
 footer_label TEXT DEFAULT '',
 sort_order INTEGER DEFAULT 0
 );
-
 CREATE TABLE IF NOT EXISTS onsite_contacts (
 id INTEGER PRIMARY KEY AUTOINCREMENT,
 site_id INTEGER NOT NULL REFERENCES sites(id) ON DELETE CASCADE,
@@ -339,7 +362,6 @@ name TEXT NOT NULL,
 phone TEXT DEFAULT '',
 sort_order INTEGER DEFAULT 0
 );
-
 CREATE TABLE IF NOT EXISTS quote_requests (
 id INTEGER PRIMARY KEY AUTOINCREMENT,
 title TEXT NOT NULL,
@@ -351,7 +373,6 @@ manager_email TEXT DEFAULT '',
 status TEXT NOT NULL DEFAULT 'open',
 created_at TEXT NOT NULL
 );
-
 CREATE TABLE IF NOT EXISTS quote_items (
 id INTEGER PRIMARY KEY AUTOINCREMENT,
 quote_request_id INTEGER NOT NULL REFERENCES quote_requests(id) ON DELETE CASCADE,
@@ -360,7 +381,6 @@ spec TEXT DEFAULT '',
 qty INTEGER NOT NULL DEFAULT 1,
 unit TEXT DEFAULT ''
 );
-
 CREATE TABLE IF NOT EXISTS vendor_assignments (
 id INTEGER PRIMARY KEY AUTOINCREMENT,
 quote_request_id INTEGER NOT NULL REFERENCES quote_requests(id) ON DELETE CASCADE,
@@ -368,7 +388,6 @@ vendor_id INTEGER NOT NULL REFERENCES vendors(id) ON DELETE CASCADE,
 permission TEXT NOT NULL DEFAULT 'view',
 UNIQUE(quote_request_id, vendor_id)
 );
-
 CREATE TABLE IF NOT EXISTS submissions (
 id INTEGER PRIMARY KEY AUTOINCREMENT,
 quote_item_id INTEGER NOT NULL REFERENCES quote_items(id) ON DELETE CASCADE,
@@ -385,7 +404,6 @@ substitute_reason TEXT DEFAULT '',
 note TEXT DEFAULT '',
 submitted_at TEXT NOT NULL
 );
-
 CREATE TABLE IF NOT EXISTS final_selections (
 quote_item_id INTEGER PRIMARY KEY REFERENCES quote_items(id) ON DELETE CASCADE,
 submission_id INTEGER NOT NULL REFERENCES submissions(id) ON DELETE CASCADE,
@@ -395,91 +413,94 @@ selected_at TEXT NOT NULL
 `);
 
 // ---- 마이그레이션: 기존 vendors 테이블에 category(단일) 컬럼만 있던 경우 대응 ----
-const vendorCols = db.prepare("PRAGMA table_info(vendors)").all().map((c) => c.name);
-function addColumnIfMissing(col, ddl) {
+const vendorCols = (await db.prepare("PRAGMA table_info(vendors)").all()).map((c) => c.name);
+async function addColumnIfMissing(col, ddl) {
 if (!vendorCols.includes(col)) {
-db.exec(`ALTER TABLE vendors ADD COLUMN ${ddl}`);
+await db.execute(`ALTER TABLE vendors ADD COLUMN ${ddl}`);
 vendorCols.push(col);
 }
 }
-addColumnIfMissing('category1', "category1 TEXT DEFAULT ''");
-addColumnIfMissing('category2', "category2 TEXT DEFAULT ''");
-addColumnIfMissing('category3', "category3 TEXT DEFAULT ''");
-addColumnIfMissing('bank_name', "bank_name TEXT DEFAULT ''");
-addColumnIfMissing('account_number', "account_number TEXT DEFAULT ''");
-addColumnIfMissing('account_holder', "account_holder TEXT DEFAULT ''");
-addColumnIfMissing('biz_reg_file', "biz_reg_file TEXT DEFAULT ''");
-addColumnIfMissing('bankbook_file', "bankbook_file TEXT DEFAULT ''");
-addColumnIfMissing('address', "address TEXT DEFAULT ''");
-addColumnIfMissing('ceo_name', "ceo_name TEXT DEFAULT ''");
-addColumnIfMissing('phone', "phone TEXT DEFAULT ''");
-addColumnIfMissing('item_type', "item_type TEXT DEFAULT ''");
-addColumnIfMissing('biz_type', "biz_type TEXT DEFAULT ''");
+await addColumnIfMissing('category1', "category1 TEXT DEFAULT ''");
+await addColumnIfMissing('category2', "category2 TEXT DEFAULT ''");
+await addColumnIfMissing('category3', "category3 TEXT DEFAULT ''");
+await addColumnIfMissing('bank_name', "bank_name TEXT DEFAULT ''");
+await addColumnIfMissing('account_number', "account_number TEXT DEFAULT ''");
+await addColumnIfMissing('account_holder', "account_holder TEXT DEFAULT ''");
+await addColumnIfMissing('biz_reg_file', "biz_reg_file TEXT DEFAULT ''");
+await addColumnIfMissing('bankbook_file', "bankbook_file TEXT DEFAULT ''");
+await addColumnIfMissing('address', "address TEXT DEFAULT ''");
+await addColumnIfMissing('ceo_name', "ceo_name TEXT DEFAULT ''");
+await addColumnIfMissing('phone', "phone TEXT DEFAULT ''");
+await addColumnIfMissing('item_type', "item_type TEXT DEFAULT ''");
+await addColumnIfMissing('biz_type', "biz_type TEXT DEFAULT ''");
 
 // quote_requests에 site_id 컬럼이 없던 예전 DB 대응
-const qrCols = db.prepare("PRAGMA table_info(quote_requests)").all().map((c) => c.name);
+const qrCols = (await db.prepare("PRAGMA table_info(quote_requests)").all()).map((c) => c.name);
 if (!qrCols.includes('site_id')) {
-db.exec('ALTER TABLE quote_requests ADD COLUMN site_id INTEGER REFERENCES sites(id)');
+await db.execute('ALTER TABLE quote_requests ADD COLUMN site_id INTEGER REFERENCES sites(id)');
 }
 if (!qrCols.includes('manager_name')) {
-db.exec("ALTER TABLE quote_requests ADD COLUMN manager_name TEXT DEFAULT ''");
+await db.execute("ALTER TABLE quote_requests ADD COLUMN manager_name TEXT DEFAULT ''");
 }
 if (!qrCols.includes('manager_email')) {
-db.exec("ALTER TABLE quote_requests ADD COLUMN manager_email TEXT DEFAULT ''");
+await db.execute("ALTER TABLE quote_requests ADD COLUMN manager_email TEXT DEFAULT ''");
 }
 
 // final_selections에 reason 컬럼이 없던 예전 DB 대응
-const finalSelCols = db.prepare("PRAGMA table_info(final_selections)").all().map((c) => c.name);
+const finalSelCols = (await db.prepare("PRAGMA table_info(final_selections)").all()).map((c) => c.name);
 if (!finalSelCols.includes('reason')) {
-db.exec("ALTER TABLE final_selections ADD COLUMN reason TEXT DEFAULT ''");
+await db.execute("ALTER TABLE final_selections ADD COLUMN reason TEXT DEFAULT ''");
 }
 
 if (vendorCols.includes('category') && vendorCols.includes('category1')) {
 // 예전 단일 category 값을 category1로 옮겨준다 (비어있는 경우에만)
-db.exec("UPDATE vendors SET category1 = category WHERE (category1 IS NULL OR category1 = '') AND category IS NOT NULL AND category <> ''");
+await db.execute("UPDATE vendors SET category1 = category WHERE (category1 IS NULL OR category1 = '') AND category IS NOT NULL AND category <> ''");
 }
 
 // 기본 관리자 계정 시딩 (없을 때만)
-const adminCount = db.prepare('SELECT COUNT(*) AS c FROM admins').get().c;
+const adminCount = (await db.prepare('SELECT COUNT(*) AS c FROM admins').get()).c;
 if (adminCount === 0) {
-db.prepare('INSERT INTO admins (login_id, password_hash, display_name) VALUES (?, ?, ?)')
+await db.prepare('INSERT INTO admins (login_id, password_hash, display_name) VALUES (?, ?, ?)')
 .run('admin', hashPassword('admin1234'), '관리자');
 console.log('[초기화] 기본 관리자 계정 생성: admin / admin1234 (로그인 후 반드시 변경하세요)');
 }
 
 // 카테고리 옵션 기본값 시딩 (해당 그룹에 아무 옵션도 없을 때만)
-function seedCategoryGroup(groupKey, labels) {
-const count = db.prepare('SELECT COUNT(*) AS c FROM category_options WHERE group_key = ?').get(groupKey).c;
+async function seedCategoryGroup(groupKey, labels) {
+const count = (await db.prepare('SELECT COUNT(*) AS c FROM category_options WHERE group_key = ?').get(groupKey)).c;
 if (count === 0 && labels.length > 0) {
 const insert = db.prepare('INSERT INTO category_options (group_key, label, sort_order) VALUES (?, ?, ?)');
-labels.forEach((label, i) => insert.run(groupKey, label, i));
+for (let i = 0; i < labels.length; i++) {
+await insert.run(groupKey, labels[i], i);
 }
 }
-seedCategoryGroup('cat1', ['코스', '일반관리', '시설']);
-seedCategoryGroup('cat2', ['저장품', '소모품', '코스 관리비']);
-seedCategoryGroup('cat3', []);
+}
+await seedCategoryGroup('cat1', ['코스', '일반관리', '시설']);
+await seedCategoryGroup('cat2', ['저장품', '소모품', '코스 관리비']);
+await seedCategoryGroup('cat3', []);
 
 // 사업장 기본값 시딩 (사업장이 하나도 없을 때만)
-const siteCount = db.prepare('SELECT COUNT(*) AS c FROM sites').get().c;
+const siteCount = (await db.prepare('SELECT COUNT(*) AS c FROM sites').get()).c;
 if (siteCount === 0) {
 const insertSite = db.prepare(`
 INSERT INTO sites (name, title_label, company_name, address, ceo_name, phone, biz_reg_no, item_type, biz_type, tax_email, footer_label, sort_order)
 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 `);
-insertSite.run('힐마루 포천', '포천', '(주)동훈', '경기 포천시 영중면 금화봉4길 77', '김남연, 김태훈 (공동대표)', '1899-5800', '422-85-02210', '골프장', '서비스업', 'pcbill@donghoon.com', '주식회사동훈힐마루CC포천', 0);
-insertSite.run('힐마루 창녕', '창녕', '(주)동훈', '경상남도 창녕군 장마면 영산계성로 469-195', '김남연, 김태훈 (공동대표)', '1899-5800', '608-85-29021', '골프장', '서비스', '', '주식회사동훈힐마루CC창녕', 1);
+await insertSite.run('힐마루 포천', '포천', '(주)동훈', '경기 포천시 영중면 금화봉4길 77', '김남연, 김태훈 (공동대표)', '1899-5800', '422-85-02210', '골프장', '서비스업', 'pcbill@donghoon.com', '주식회사동훈힐마루CC포천', 0);
+await insertSite.run('힐마루 창녕', '창녕', '(주)동훈', '경상남도 창녕군 장마면 영산계성로 469-195', '김남연, 김태훈 (공동대표)', '1899-5800', '608-85-29021', '골프장', '서비스', '', '주식회사동훈힐마루CC창녕', 1);
+}
+} // ==== end of initDb() ====
+
+async function getCategoryOptions(groupKey) {
+return await db.prepare('SELECT * FROM category_options WHERE group_key = ? ORDER BY sort_order, id').all(groupKey);
 }
 
-function getCategoryOptions(groupKey) {
-return db.prepare('SELECT * FROM category_options WHERE group_key = ? ORDER BY sort_order, id').all(groupKey);
+async function getSites() {
+return await db.prepare('SELECT * FROM sites ORDER BY sort_order, id').all();
 }
 
-function getSites() {
-return db.prepare('SELECT * FROM sites ORDER BY sort_order, id').all();
-}
-
-function getOnsiteContacts(siteId) {
-return db.prepare('SELECT * FROM onsite_contacts WHERE site_id = ? ORDER BY sort_order, id').all(siteId);
+async function getOnsiteContacts(siteId) {
+return await db.prepare('SELECT * FROM onsite_contacts WHERE site_id = ? ORDER BY sort_order, id').all(siteId);
 }
 
 module.exports.UPLOAD_DIR = UPLOAD_DIR;
@@ -1187,7 +1208,6 @@ const body = `
 <tbody>${rows || '<tr><td colspan="9">등록된 업체가 없습니다.</td></tr>'}</tbody>
 </table>
 </div>
-
 <h2>엑셀로 업체 일괄 등록</h2>
 <div class="card">
 <p class="hint"><a href="/admin/vendors/template">↓ 등록 양식 다운로드(.xlsx)</a> — 양식을 내려받아 작성한 뒤 업로드해주세요.</p>
@@ -1198,7 +1218,6 @@ const body = `
 <button type="submit" class="btn secondary">일괄 등록</button>
 </form>
 </div>
-
 <h2>${editVendor ? `업체 정보 수정 — ${escapeHtml(editVendor.name)}` : '업체 신규 등록'}</h2>
 <div class="card">
 <form method="POST" action="${editVendor ? `/admin/vendors/${editVendor.id}` : '/admin/vendors'}" enctype="multipart/form-data">
@@ -1206,7 +1225,6 @@ const body = `
 <div><label>업체명</label><input type="text" name="name" required value="${editVendor ? escapeHtml(editVendor.name) : ''}"></div>
 <div><label>사업자번호</label><input type="text" name="biz_reg_no" value="${editVendor ? escapeHtml(editVendor.biz_reg_no) : ''}"></div>
 </div>
-
 <fieldset>
 <legend>발주서용 공급자 정보</legend>
 <p class="hint">발주서 생성 시 '공급자' 란에 그대로 들어갑니다.</p>
@@ -1220,7 +1238,6 @@ const body = `
 <div><label>업태</label><input type="text" name="biz_type" value="${editVendor ? escapeHtml(editVendor.biz_type) : ''}"></div>
 </div>
 </fieldset>
-
 <fieldset>
 <legend>업체 카테고리</legend>
 <p class="hint">목록에 없는 값이 필요하면 <a href="/admin/categories" target="_blank">카테고리 관리</a>에서 먼저 추가해주세요.</p>
@@ -1248,7 +1265,6 @@ ${optionTags(cat3Options, cat3Sel)}
 </div>
 </div>
 </fieldset>
-
 <div class="form-row">
 <div><label>담당자명</label><input type="text" name="contact_name" value="${editVendor ? escapeHtml(editVendor.contact_name) : ''}"></div>
 <div><label>담당자 이메일</label><input type="email" name="contact_email" value="${editVendor ? escapeHtml(editVendor.contact_email) : ''}"></div>
@@ -1264,7 +1280,6 @@ ${optionTags(cat3Options, cat3Sel)}
 </select>
 </div>
 </div>
-
 <fieldset>
 <legend>계좌 정보</legend>
 <div class="form-row">
@@ -1273,7 +1288,6 @@ ${optionTags(cat3Options, cat3Sel)}
 <div><label>예금주</label><input type="text" name="account_holder" value="${editVendor ? escapeHtml(editVendor.account_holder) : ''}"></div>
 </div>
 </fieldset>
-
 <fieldset>
 <legend>첨부 서류</legend>
 <div class="form-row">
@@ -1289,7 +1303,6 @@ ${editVendor ? `<div class="hint">현재: ${fileLink(editVendor.id, 'bankbook', 
 </div>
 </div>
 </fieldset>
-
 <div style="margin-top:16px;">
 <button type="submit">${editVendor ? '수정 저장' : '등록'}</button>
 ${editVendor ? '<a class="btn ghost" href="/admin/vendors" style="margin-left:8px;">취소</a>' : ''}
@@ -1364,7 +1377,6 @@ const body = `
 <tbody>${rows || '<tr><td colspan="5">등록된 사업장이 없습니다.</td></tr>'}</tbody>
 </table>
 </div>
-
 <h2>엑셀로 사업장 일괄 등록</h2>
 <div class="card">
 <p class="hint"><a href="/admin/sites/template">↓ 등록 양식 다운로드(.xlsx)</a> — 양식을 내려받아 작성한 뒤 업로드해주세요.</p>
@@ -1375,7 +1387,6 @@ const body = `
 <button type="submit" class="btn secondary">일괄 등록</button>
 </form>
 </div>
-
 <h2>${editSite ? `사업장 수정 — ${escapeHtml(editSite.name)}` : '사업장 신규 등록'}</h2>
 <div class="card">
 <form method="POST" action="${editSite ? `/admin/sites/${editSite.id}` : '/admin/sites'}">
@@ -1405,7 +1416,6 @@ ${editSite ? '<a class="btn ghost" href="/admin/sites" style="margin-left:8px;">
 </div>
 </form>
 </div>
-
 ${editSite ? `
 <h2>${escapeHtml(editSite.name)} — 현장 입고 담당자 목록</h2>
 <div class="card">
@@ -1471,7 +1481,6 @@ ${siteOptions}
 <div><label>담당자 이메일</label><input type="email" name="manager_email" placeholder="업체가 견적을 제출하면 이 메일로 알림이 갑니다"></div>
 </div>
 </div>
-
 <div class="card">
 <h3 style="margin-top:0;">품목 목록</h3>
 <div id="items-wrap">
@@ -1490,16 +1499,13 @@ ${siteOptions}
 <p class="hint">엑셀 업로드 시 위에 직접 입력한 품목과 함께 등록됩니다.</p>
 </div>
 </div>
-
 <div class="card">
 <h3 style="margin-top:0;">카테고리별(카테고리1 기준) 업체 배정</h3>
 <p class="hint">체크한 업체에게 이 견적요청이 노출됩니다. '견적입력'은 견적 제출 가능, '조회'만 체크하면 열람만 가능합니다. 생성 시 배정된 업체에게 안내 메일이 발송됩니다.</p>
 ${catBlocks || '<p class="hint">등록된 업체가 없습니다. 먼저 업체를 등록하세요.</p>'}
 </div>
-
 <button type="submit">견적요청 생성</button>
 </form>
-
 <script>
 function addItemRow() {
 const wrap = document.getElementById('items-wrap');
@@ -1580,7 +1586,6 @@ ${siteOptions}
 <div><label>담당자 이메일</label><input type="email" name="manager_email" value="${escapeHtml(qr.manager_email || '')}"></div>
 </div>
 </div>
-
 <div class="card">
 <h3 style="margin-top:0;">품목 목록</h3>
 <div id="items-wrap">
@@ -1594,17 +1599,14 @@ ${itemRows}
 <p class="hint">엑셀 업로드 시 기존 품목은 유지되고 새 품목으로 추가됩니다.</p>
 </div>
 </div>
-
 <div class="card">
 <h3 style="margin-top:0;">카테고리별(카테고리1 기준) 업체 배정</h3>
 <p class="hint">체크한 업체에게 이 견적요청이 노출됩니다. '견적입력'은 견적 제출 가능, '조회'만 체크하면 열람만 가능합니다. 체크를 해제하면 해당 업체는 더 이상 이 견적요청에 접근할 수 없습니다(단, 이미 제출한 견적 내역은 유지됩니다).</p>
 ${catBlocks || '<p class="hint">등록된 업체가 없습니다.</p>'}
 </div>
-
 <button type="submit">수정 저장</button>
 <a class="btn ghost" href="/admin/quote-requests/${qr.id}" style="margin-left:8px;">취소</a>
 </form>
-
 <script>
 function addItemRow() {
 const wrap = document.getElementById('items-wrap');
@@ -1710,10 +1712,8 @@ const body = `
 ${progressBar(selectedCount, totalItems)}
 ${selectedCount === totalItems && totalItems > 0 ? '<div class="flash success" style="margin-top:10px;">모든 품목의 최종 선정이 완료되었습니다.</div>' : ''}
 </div>
-
 <h2>품목별 견적 비교</h2>
 ${itemsBlocks}
-
 ${selectedCount > 0 ? `
 <h2>품목별 최종 선정 결과</h2>
 <div class="card">
@@ -1742,7 +1742,6 @@ return `<tr>
 <div class="value">${money(selectedAmount)}</div>
 </div>
 </div>` : ''}
-
 ${selectedCount > 0 ? `
 <h2>업체별 발주서 생성</h2>
 ${!hasSite ? `<div class="card"><p class="hint">발주서를 생성하려면 먼저 <a href="/admin/quote-requests/${qr.id}/edit">견적요청 수정</a>에서 사업장을 지정해주세요.</p></div>` : (() => {
@@ -1777,7 +1776,6 @@ ${contactOpts}
 }).join('');
 })()}
 ` : ''}
-
 <h2>배정된 업체</h2>
 <div class="card">${catBlocks || '<p class="hint">배정된 업체가 없습니다.</p>'}</div>
 `;
@@ -1811,7 +1809,6 @@ const subRows = subsMine.map((s) => `
 return `
 <div class="card">
 <h3 style="margin-top:0;">${escapeHtml(it.item_name)} <span class="hint">(${escapeHtml(it.spec || '')} · 요청수량 ${it.qty}${escapeHtml(it.unit || '')})</span></h3>
-
 ${requestedMine.length > 0 ? `
 <p class="hint">제출한 요청품 견적: ${escapeHtml(requestedMine[0].product_name)} / ${money(requestedMine[0].unit_price)} / 납기 ${escapeHtml(requestedMine[0].delivery_date || '-')}</p>
 ` : (canSubmit ? `
@@ -1832,12 +1829,10 @@ ${requestedMine.length > 0 ? `
 <label>비고</label><textarea name="note" rows="2"></textarea>
 <div style="margin-top:10px;"><button type="submit">요청품 견적 제출</button></div>
 </form>` : '<p class="hint">열람 권한만 있어 견적을 제출할 수 없습니다.</p>')}
-
 ${subsMine.length > 0 ? `
 <h4 style="margin-bottom:4px;">제출한 대체품</h4>
 <table><thead><tr><th>구분</th><th>제안 품목</th><th>규격</th><th>수량</th><th>단가</th><th>납기</th><th>제안 사유</th></tr></thead><tbody>${subRows}</tbody></table>
 ` : ''}
-
 ${canSubmit ? `
 <details style="margin-top:12px;">
 <summary style="cursor:pointer;color:#2563eb;">+ 대체품 제안 추가</summary>
@@ -1996,13 +1991,13 @@ return res.end(views.loginPage({ role, error: '로그인 시도가 너무 많습
 
 let ok = false, userData = null;
 if (role === 'admin') {
-const admin = db.prepare('SELECT * FROM admins WHERE login_id = ?').get(loginId);
+const admin = await db.prepare('SELECT * FROM admins WHERE login_id = ?').get(loginId);
 if (admin && auth.verifyPassword(password, admin.password_hash)) {
 ok = true;
 userData = { role: 'admin', userId: admin.id, displayName: admin.display_name };
 }
 } else {
-const vendor = db.prepare('SELECT * FROM vendors WHERE login_id = ?').get(loginId);
+const vendor = await db.prepare('SELECT * FROM vendors WHERE login_id = ?').get(loginId);
 if (vendor && vendor.active && auth.verifyPassword(password, vendor.password_hash)) {
 ok = true;
 userData = { role: 'vendor', userId: vendor.id, displayName: vendor.display_name || vendor.name };
@@ -2029,10 +2024,10 @@ redirect(res, '/login');
 });
 
 // ---------- 계정설정 (관리자/업체 공용 - 표시이름/비밀번호 변경) ----------
-router.get('/admin/account', (req, res) => {
+router.get('/admin/account', async (req, res) => {
 const u = requireLogin('admin')(req, res);
 if (!u) return;
-const admin = db.prepare('SELECT * FROM admins WHERE id = ?').get(u.userId);
+const admin = await db.prepare('SELECT * FROM admins WHERE id = ?').get(u.userId);
 res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
 res.end(views.accountPage({ user: { ...u, loginId: admin ? admin.login_id : '' } }));
 });
@@ -2044,7 +2039,7 @@ const body = await parseBody(req);
 const displayName = (body.display_name || '').trim();
 const newPassword = body.new_password || '';
 const confirm = body.new_password_confirm || '';
-const admin = db.prepare('SELECT * FROM admins WHERE id = ?').get(u.userId);
+const admin = await db.prepare('SELECT * FROM admins WHERE id = ?').get(u.userId);
 if (!admin) return redirect(res, '/admin/account');
 if (newPassword && newPassword !== confirm) {
 res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
@@ -2052,15 +2047,15 @@ return res.end(views.accountPage({ user: { ...u, loginId: admin.login_id, displa
 }
 const passwordHash = newPassword ? auth.hashPassword(newPassword) : admin.password_hash;
 const finalDisplayName = displayName || admin.display_name;
-db.prepare('UPDATE admins SET display_name = ?, password_hash = ? WHERE id = ?').run(finalDisplayName, passwordHash, admin.id);
+await db.prepare('UPDATE admins SET display_name = ?, password_hash = ? WHERE id = ?').run(finalDisplayName, passwordHash, admin.id);
 u.displayName = finalDisplayName; // 현재 세션에도 즉시 반영
 redirect(res, '/admin/account');
 });
 
-router.get('/vendor/account', (req, res) => {
+router.get('/vendor/account', async (req, res) => {
 const u = requireLogin('vendor')(req, res);
 if (!u) return;
-const vendor = db.prepare('SELECT * FROM vendors WHERE id = ?').get(u.userId);
+const vendor = await db.prepare('SELECT * FROM vendors WHERE id = ?').get(u.userId);
 res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
 res.end(views.accountPage({ user: { ...u, loginId: vendor ? vendor.login_id : '' } }));
 });
@@ -2072,7 +2067,7 @@ const body = await parseBody(req);
 const displayName = (body.display_name || '').trim();
 const newPassword = body.new_password || '';
 const confirm = body.new_password_confirm || '';
-const vendor = db.prepare('SELECT * FROM vendors WHERE id = ?').get(u.userId);
+const vendor = await db.prepare('SELECT * FROM vendors WHERE id = ?').get(u.userId);
 if (!vendor) return redirect(res, '/vendor/account');
 if (newPassword && newPassword !== confirm) {
 res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
@@ -2080,14 +2075,14 @@ return res.end(views.accountPage({ user: { ...u, loginId: vendor.login_id, displ
 }
 const passwordHash = newPassword ? auth.hashPassword(newPassword) : vendor.password_hash;
 const finalDisplayName = displayName || vendor.display_name;
-db.prepare('UPDATE vendors SET display_name = ?, password_hash = ? WHERE id = ?').run(finalDisplayName, passwordHash, vendor.id);
+await db.prepare('UPDATE vendors SET display_name = ?, password_hash = ? WHERE id = ?').run(finalDisplayName, passwordHash, vendor.id);
 u.displayName = finalDisplayName; // 현재 세션에도 즉시 반영
 redirect(res, '/vendor/account');
 });
 
 // ---------- 관리자: 대시보드 ----------
-function computeSelectionForItem(itemId) {
-const submissions = db.prepare(`
+async function computeSelectionForItem(itemId) {
+const submissions = await db.prepare(`
 SELECT s.*, v.name AS vendor_name FROM submissions s
 JOIN vendors v ON v.id = s.vendor_id
 WHERE s.quote_item_id = ?
@@ -2095,7 +2090,7 @@ WHERE s.quote_item_id = ?
 let minPrice = null;
 if (submissions.length > 0) minPrice = Math.min(...submissions.map((s) => s.unit_price));
 const candidates = submissions.filter((s) => s.unit_price === minPrice);
-const selectedRow = db.prepare('SELECT * FROM final_selections WHERE quote_item_id = ?').get(itemId);
+const selectedRow = await db.prepare('SELECT * FROM final_selections WHERE quote_item_id = ?').get(itemId);
 let selected = null;
 if (selectedRow) {
 const found = submissions.find((s) => s.id === selectedRow.submission_id);
@@ -2106,44 +2101,48 @@ selected = { ...found, selectionReason: selectedRow.reason || '', isLowestPick: 
 return { submissions, minPrice, candidates, selected };
 }
 
-router.get('/admin', (req, res) => {
+router.get('/admin', async (req, res) => {
 const u = requireLogin('admin')(req, res);
 if (!u) return;
-const qrs = db.prepare('SELECT * FROM quote_requests ORDER BY id DESC').all();
-const requests = qrs.map((qr) => {
-const items = db.prepare('SELECT * FROM quote_items WHERE quote_request_id = ?').all(qr.id);
+const qrs = await db.prepare('SELECT * FROM quote_requests ORDER BY id DESC').all();
+const requests = [];
+for (const qr of qrs) {
+const items = await db.prepare('SELECT * FROM quote_items WHERE quote_request_id = ?').all(qr.id);
 let selectedCount = 0, selectedAmount = 0;
 for (const it of items) {
-const { selected } = computeSelectionForItem(it.id);
+const { selected } = await computeSelectionForItem(it.id);
 if (selected) { selectedCount += 1; selectedAmount += selected.unit_price * selected.qty; }
 }
-const assignments = db.prepare('SELECT * FROM vendor_assignments WHERE quote_request_id = ?').all(qr.id);
+const assignments = await db.prepare('SELECT * FROM vendor_assignments WHERE quote_request_id = ?').all(qr.id);
 const vendorCount = assignments.length;
-const submittedVendorIds = new Set(
-db.prepare(`
+const submittedVendorRows = await db.prepare(`
 SELECT DISTINCT s.vendor_id FROM submissions s
 JOIN quote_items qi ON qi.id = s.quote_item_id
 WHERE qi.quote_request_id = ?
-`).all(qr.id).map((r) => r.vendor_id)
-);
-return {
+`).all(qr.id);
+const submittedVendorIds = new Set(submittedVendorRows.map((r) => r.vendor_id));
+requests.push({
 ...qr,
 totalItems: items.length,
 selectedCount,
 selectedAmount,
 vendorCount,
 submittedVendorCount: submittedVendorIds.size,
-};
 });
+}
 res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
 res.end(views.adminDashboard({ user: u, requests }));
 });
 
 // ---------- 관리자: 카테고리 관리 ----------
-router.get('/admin/categories', (req, res) => {
+router.get('/admin/categories', async (req, res) => {
 const u = requireLogin('admin')(req, res);
 if (!u) return;
-const groups = { cat1: getCategoryOptions('cat1'), cat2: getCategoryOptions('cat2'), cat3: getCategoryOptions('cat3') };
+const groups = {
+cat1: await getCategoryOptions('cat1'),
+cat2: await getCategoryOptions('cat2'),
+cat3: await getCategoryOptions('cat3'),
+};
 res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
 res.end(views.adminCategoriesPage({ user: u, groups }));
 });
@@ -2155,9 +2154,9 @@ const body = await parseBody(req);
 const groupKey = ['cat1', 'cat2', 'cat3'].includes(body.group_key) ? body.group_key : null;
 const label = (body.label || '').trim();
 if (groupKey && label) {
-const maxOrder = db.prepare('SELECT COALESCE(MAX(sort_order), -1) AS m FROM category_options WHERE group_key = ?').get(groupKey).m;
+const maxOrder = (await db.prepare('SELECT COALESCE(MAX(sort_order), -1) AS m FROM category_options WHERE group_key = ?').get(groupKey)).m;
 try {
-db.prepare('INSERT INTO category_options (group_key, label, sort_order) VALUES (?, ?, ?)').run(groupKey, label, maxOrder + 1);
+await db.prepare('INSERT INTO category_options (group_key, label, sort_order) VALUES (?, ?, ?)').run(groupKey, label, maxOrder + 1);
 } catch (e) { /* 중복이면 무시 */ }
 }
 redirect(res, '/admin/categories');
@@ -2201,9 +2200,9 @@ if (xlsxRowIsEmpty(r)) continue;
 const groupKey = normalizeCategoryGroupKey(r[0]);
 const label = (r[1] || '').trim();
 if (!groupKey || !label) continue;
-const maxOrder = db.prepare('SELECT COALESCE(MAX(sort_order), -1) AS m FROM category_options WHERE group_key = ?').get(groupKey).m;
+const maxOrder = (await db.prepare('SELECT COALESCE(MAX(sort_order), -1) AS m FROM category_options WHERE group_key = ?').get(groupKey)).m;
 try {
-insert.run(groupKey, label, maxOrder + 1);
+await insert.run(groupKey, label, maxOrder + 1);
 created++;
 } catch (e) { /* 중복이면 무시 */ }
 }
@@ -2219,7 +2218,7 @@ const body = await parseBody(req);
 const label = (body.label || '').trim();
 if (label) {
 try {
-db.prepare('UPDATE category_options SET label = ? WHERE id = ?').run(label, id);
+await db.prepare('UPDATE category_options SET label = ? WHERE id = ?').run(label, id);
 } catch (e) { /* 중복 라벨이면 무시 */ }
 }
 redirect(res, '/admin/categories');
@@ -2229,22 +2228,22 @@ router.post('/admin/categories/:id/delete', async (req, res) => {
 const u = requireLogin('admin')(req, res);
 if (!u) return;
 const id = Number(req.params.id);
-db.prepare('DELETE FROM category_options WHERE id = ?').run(id);
+await db.prepare('DELETE FROM category_options WHERE id = ?').run(id);
 redirect(res, '/admin/categories');
 });
 
 // ---------- 관리자: 업체 관리 ----------
 
 // ---------- 관리자: 사업장 관리 ----------
-router.get('/admin/sites', (req, res) => {
+router.get('/admin/sites', async (req, res) => {
 const u = requireLogin('admin')(req, res);
 if (!u) return;
-const sites = getSites();
+const sites = await getSites();
 let editSite = null;
 let onsiteContacts = [];
 if (req.query.edit) {
-editSite = db.prepare('SELECT * FROM sites WHERE id = ?').get(Number(req.query.edit));
-if (editSite) onsiteContacts = getOnsiteContacts(editSite.id);
+editSite = await db.prepare('SELECT * FROM sites WHERE id = ?').get(Number(req.query.edit));
+if (editSite) onsiteContacts = await getOnsiteContacts(editSite.id);
 }
 res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
 res.end(views.adminSitesPage({ user: u, sites, editSite, onsiteContacts }));
@@ -2257,8 +2256,8 @@ const siteId = Number(req.params.id);
 const body = await parseBody(req);
 const name = (body.name || '').trim();
 if (name) {
-const maxOrder = db.prepare('SELECT COALESCE(MAX(sort_order), -1) AS m FROM onsite_contacts WHERE site_id = ?').get(siteId).m;
-db.prepare('INSERT INTO onsite_contacts (site_id, name, phone, sort_order) VALUES (?, ?, ?, ?)').run(siteId, name, body.phone || '', maxOrder + 1);
+const maxOrder = (await db.prepare('SELECT COALESCE(MAX(sort_order), -1) AS m FROM onsite_contacts WHERE site_id = ?').get(siteId)).m;
+await db.prepare('INSERT INTO onsite_contacts (site_id, name, phone, sort_order) VALUES (?, ?, ?, ?)').run(siteId, name, body.phone || '', maxOrder + 1);
 }
 redirect(res, `/admin/sites?edit=${siteId}`);
 });
@@ -2268,9 +2267,9 @@ const u = requireLogin('admin')(req, res);
 if (!u) return;
 const contactId = Number(req.params.contactId);
 const body = await parseBody(req);
-const contact = db.prepare('SELECT * FROM onsite_contacts WHERE id = ?').get(contactId);
+const contact = await db.prepare('SELECT * FROM onsite_contacts WHERE id = ?').get(contactId);
 if (!contact) { res.writeHead(404); return res.end('담당자를 찾을 수 없습니다.'); }
-db.prepare('UPDATE onsite_contacts SET name = ?, phone = ? WHERE id = ?').run(body.name || contact.name, body.phone || '', contactId);
+await db.prepare('UPDATE onsite_contacts SET name = ?, phone = ? WHERE id = ?').run(body.name || contact.name, body.phone || '', contactId);
 redirect(res, `/admin/sites?edit=${contact.site_id}`);
 });
 
@@ -2278,9 +2277,9 @@ router.post('/admin/sites/contacts/:contactId/delete', async (req, res) => {
 const u = requireLogin('admin')(req, res);
 if (!u) return;
 const contactId = Number(req.params.contactId);
-const contact = db.prepare('SELECT * FROM onsite_contacts WHERE id = ?').get(contactId);
+const contact = await db.prepare('SELECT * FROM onsite_contacts WHERE id = ?').get(contactId);
 if (!contact) { res.writeHead(404); return res.end('담당자를 찾을 수 없습니다.'); }
-db.prepare('DELETE FROM onsite_contacts WHERE id = ?').run(contactId);
+await db.prepare('DELETE FROM onsite_contacts WHERE id = ?').run(contactId);
 redirect(res, `/admin/sites?edit=${contact.site_id}`);
 });
 
@@ -2316,8 +2315,8 @@ const r = rows[i];
 if (xlsxRowIsEmpty(r)) continue;
 const [name, titleLabel, companyName, address, ceoName, phone, bizRegNo, itemType, bizType, taxEmail, onsiteContact, footerLabel] = r;
 if (!name || !titleLabel) continue;
-const maxOrder = db.prepare('SELECT COALESCE(MAX(sort_order), -1) AS m FROM sites').get().m;
-insertSite.run(name, titleLabel, companyName || '(주)동훈', address || '', ceoName || '', phone || '', bizRegNo || '', itemType || '', bizType || '', taxEmail || '', onsiteContact || '', footerLabel || '', maxOrder + 1);
+const maxOrder = (await db.prepare('SELECT COALESCE(MAX(sort_order), -1) AS m FROM sites').get()).m;
+await insertSite.run(name, titleLabel, companyName || '(주)동훈', address || '', ceoName || '', phone || '', bizRegNo || '', itemType || '', bizType || '', taxEmail || '', onsiteContact || '', footerLabel || '', maxOrder + 1);
 created++;
 }
 console.log(`[엑셀] 사업장 일괄 등록: 생성 ${created}건`);
@@ -2330,8 +2329,8 @@ if (!u) return;
 const body = await parseBody(req);
 const { name, title_label, company_name, address, ceo_name, phone, biz_reg_no, item_type, biz_type, tax_email, onsite_contact, footer_label } = body;
 if (!name || !title_label) return redirect(res, '/admin/sites');
-const maxOrder = db.prepare('SELECT COALESCE(MAX(sort_order), -1) AS m FROM sites').get().m;
-db.prepare(`
+const maxOrder = (await db.prepare('SELECT COALESCE(MAX(sort_order), -1) AS m FROM sites').get()).m;
+await db.prepare(`
 INSERT INTO sites (name, title_label, company_name, address, ceo_name, phone, biz_reg_no, item_type, biz_type, tax_email, onsite_contact, footer_label, sort_order)
 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 `).run(name, title_label, company_name || '(주)동훈', address || '', ceo_name || '', phone || '', biz_reg_no || '', item_type || '', biz_type || '', tax_email || '', onsite_contact || '', footer_label || '', maxOrder + 1);
@@ -2344,7 +2343,7 @@ if (!u) return;
 const id = Number(req.params.id);
 const body = await parseBody(req);
 const { name, title_label, company_name, address, ceo_name, phone, biz_reg_no, item_type, biz_type, tax_email, onsite_contact, footer_label } = body;
-db.prepare(`
+await db.prepare(`
 UPDATE sites SET name=?, title_label=?, company_name=?, address=?, ceo_name=?, phone=?, biz_reg_no=?, item_type=?, biz_type=?, tax_email=?, onsite_contact=?, footer_label=?
 WHERE id=?
 `).run(name, title_label, company_name || '(주)동훈', address || '', ceo_name || '', phone || '', biz_reg_no || '', item_type || '', biz_type || '', tax_email || '', onsite_contact || '', footer_label || '', id);
@@ -2352,17 +2351,17 @@ redirect(res, '/admin/sites');
 });
 
 // ---------- 관리자: 업체 관리 ----------
-router.get('/admin/vendors', (req, res) => {
+router.get('/admin/vendors', async (req, res) => {
 const u = requireLogin('admin')(req, res);
 if (!u) return;
-const vendors = db.prepare('SELECT * FROM vendors ORDER BY category1, name').all();
+const vendors = await db.prepare('SELECT * FROM vendors ORDER BY category1, name').all();
 let editVendor = null;
 if (req.query.edit) {
-editVendor = db.prepare('SELECT * FROM vendors WHERE id = ?').get(Number(req.query.edit));
+editVendor = await db.prepare('SELECT * FROM vendors WHERE id = ?').get(Number(req.query.edit));
 }
-const cat1Options = getCategoryOptions('cat1').map((o) => o.label);
-const cat2Options = getCategoryOptions('cat2').map((o) => o.label);
-const cat3Options = getCategoryOptions('cat3').map((o) => o.label);
+const cat1Options = (await getCategoryOptions('cat1')).map((o) => o.label);
+const cat2Options = (await getCategoryOptions('cat2')).map((o) => o.label);
+const cat3Options = (await getCategoryOptions('cat3')).map((o) => o.label);
 res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
 res.end(views.adminVendorsPage({ user: u, vendors, editVendor, cat1Options, cat2Options, cat3Options }));
 });
@@ -2402,9 +2401,9 @@ const r = rows[i];
 if (xlsxRowIsEmpty(r)) continue;
 const [name, bizRegNo, contactName, contactEmail, loginId, password, cat1, cat2, cat3, address, ceoName, phone, itemType, bizType, bankName, accountNumber, accountHolder] = r;
 if (!name || !loginId || !password) { skipped++; continue; }
-const exists = db.prepare('SELECT id FROM vendors WHERE login_id = ?').get(loginId);
+const exists = await db.prepare('SELECT id FROM vendors WHERE login_id = ?').get(loginId);
 if (exists) { skipped++; continue; }
-insertVendor.run(
+await insertVendor.run(
 name, cat1 || '', cat2 || '', cat3 || '', bizRegNo || '',
 contactName || '', contactEmail || '', loginId, auth.hashPassword(password),
 contactName || '', bankName || '', accountNumber || '', accountHolder || '',
@@ -2428,13 +2427,13 @@ bank_name, account_number, account_holder,
 address, ceo_name, phone, item_type, biz_type,
 } = body;
 if (!name || !login_id || !password) return redirect(res, '/admin/vendors');
-const exists = db.prepare('SELECT id FROM vendors WHERE login_id = ?').get(login_id);
+const exists = await db.prepare('SELECT id FROM vendors WHERE login_id = ?').get(login_id);
 if (exists) return redirect(res, '/admin/vendors');
 
 const bizRegFile = saveUploadedFile(files.biz_reg_file, 'biz');
 const bankbookFile = saveUploadedFile(files.bankbook_file, 'bankbook');
 
-db.prepare(`
+await db.prepare(`
 INSERT INTO vendors (
 name, category1, category2, category3, biz_reg_no, contact_name, contact_email,
 login_id, password_hash, display_name, bank_name, account_number, account_holder,
@@ -2462,14 +2461,14 @@ contact_name, contact_email, display_name, login_id, password, active,
 bank_name, account_number, account_holder,
 address, ceo_name, phone, item_type, biz_type,
 } = body;
-const current = db.prepare('SELECT * FROM vendors WHERE id = ?').get(id);
+const current = await db.prepare('SELECT * FROM vendors WHERE id = ?').get(id);
 if (!current) return redirect(res, '/admin/vendors');
 const passwordHash = password && password.trim() ? auth.hashPassword(password) : current.password_hash;
 
 const bizRegFile = saveUploadedFile(files.biz_reg_file, `biz_${id}`) || current.biz_reg_file;
 const bankbookFile = saveUploadedFile(files.bankbook_file, `bankbook_${id}`) || current.bankbook_file;
 
-db.prepare(`
+await db.prepare(`
 UPDATE vendors SET
 name=?, category1=?, category2=?, category3=?, biz_reg_no=?, contact_name=?, contact_email=?,
 login_id=?, password_hash=?, display_name=?, bank_name=?, account_number=?, account_holder=?,
@@ -2486,12 +2485,12 @@ redirect(res, '/admin/vendors');
 });
 
 // 사업자등록증 / 통장사본 다운로드 (관리자 전용)
-router.get('/admin/vendors/file/:id/:type', (req, res) => {
+router.get('/admin/vendors/file/:id/:type', async (req, res) => {
 const u = requireLogin('admin')(req, res);
 if (!u) return;
 const id = Number(req.params.id);
 const type = req.params.type;
-const vendor = db.prepare('SELECT * FROM vendors WHERE id = ?').get(id);
+const vendor = await db.prepare('SELECT * FROM vendors WHERE id = ?').get(id);
 if (!vendor) { res.writeHead(404); return res.end('업체를 찾을 수 없습니다.'); }
 const filename = type === 'biz' ? vendor.biz_reg_file : (type === 'bankbook' ? vendor.bankbook_file : null);
 if (!filename) { res.writeHead(404); return res.end('첨부된 파일이 없습니다.'); }
@@ -2504,18 +2503,18 @@ fs.createReadStream(filePath).pipe(res);
 });
 
 // ---------- 관리자: 견적요청 생성 ----------
-router.get('/admin/quote-requests/new', (req, res) => {
+router.get('/admin/quote-requests/new', async (req, res) => {
 const u = requireLogin('admin')(req, res);
 if (!u) return;
-const vendors = db.prepare('SELECT * FROM vendors WHERE active = 1 ORDER BY category1, name').all();
+const vendors = await db.prepare('SELECT * FROM vendors WHERE active = 1 ORDER BY category1, name').all();
 const vendorsByCategory = {};
 for (const v of vendors) {
 const key = v.category1 || '미분류';
 if (!vendorsByCategory[key]) vendorsByCategory[key] = [];
 vendorsByCategory[key].push(v);
 }
-const cat1Options = getCategoryOptions('cat1').map((o) => o.label);
-const sites = getSites();
+const cat1Options = (await getCategoryOptions('cat1')).map((o) => o.label);
+const sites = await getSites();
 res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
 res.end(views.quoteRequestNewPage({ user: u, vendorsByCategory, cat1Options, sites }));
 });
@@ -2569,7 +2568,7 @@ const insertQr = db.prepare(`
 INSERT INTO quote_requests (title, submission_deadline, requested_delivery_date, site_id, manager_name, manager_email, status, created_at)
 VALUES (?, ?, ?, ?, ?, ?, 'open', ?)
 `);
-const info = insertQr.run(title, body.submission_deadline || null, body.requested_delivery_date || null, body.site_id ? Number(body.site_id) : null, managerName, managerEmail, new Date().toISOString());
+const info = await insertQr.run(title, body.submission_deadline || null, body.requested_delivery_date || null, body.site_id ? Number(body.site_id) : null, managerName, managerEmail, new Date().toISOString());
 const qrId = info.lastInsertRowid;
 
 const names = toArray(body['item_name[]']);
@@ -2579,10 +2578,10 @@ const units = toArray(body['item_unit[]']);
 const insertItem = db.prepare('INSERT INTO quote_items (quote_request_id, item_name, spec, qty, unit) VALUES (?, ?, ?, ?, ?)');
 for (let i = 0; i < names.length; i++) {
 if (!names[i] || !names[i].trim()) continue;
-insertItem.run(qrId, names[i].trim(), specs[i] || '', Number(qtys[i]) || 1, units[i] || '');
+await insertItem.run(qrId, names[i].trim(), specs[i] || '', Number(qtys[i]) || 1, units[i] || '');
 }
 for (const it of parseItemsExcel(files.items_excel)) {
-insertItem.run(qrId, it.name, it.spec, it.qty, it.unit);
+await insertItem.run(qrId, it.name, it.spec, it.qty, it.unit);
 }
 
 const viewIds = new Set(toArray(body.assign_view).map(Number));
@@ -2591,13 +2590,13 @@ const insertAssign = db.prepare('INSERT OR REPLACE INTO vendor_assignments (quot
 const allIds = new Set([...viewIds, ...submitIds]);
 for (const vid of allIds) {
 const perm = submitIds.has(vid) ? 'submit' : 'view';
-insertAssign.run(qrId, vid, perm);
+await insertAssign.run(qrId, vid, perm);
 }
 
 // 배정된 업체들에게 새 견적요청 안내 메일 발송 (실패해도 화면 진행에는 영향 없음)
 if (allIds.size > 0) {
 const baseUrl = `${isHttps(req) ? 'https' : 'http'}://${req.headers.host}`;
-const vendorRows = db.prepare(`SELECT * FROM vendors WHERE id IN (${Array.from(allIds).map(() => '?').join(',')})`).all(...Array.from(allIds));
+const vendorRows = await db.prepare(`SELECT * FROM vendors WHERE id IN (${Array.from(allIds).map(() => '?').join(',')})`).all(...Array.from(allIds));
 for (const v of vendorRows) {
 if (!v.contact_email) continue;
 mail.sendMail({
@@ -2615,15 +2614,15 @@ redirect(res, `/admin/quote-requests/${qrId}`);
 });
 
 // ---------- 관리자: 견적요청 상세 ----------
-router.get('/admin/quote-requests/:id', (req, res) => {
+router.get('/admin/quote-requests/:id', async (req, res) => {
 const u = requireLogin('admin')(req, res);
 if (!u) return;
 const id = Number(req.params.id);
-const qr = db.prepare('SELECT * FROM quote_requests WHERE id = ?').get(id);
+const qr = await db.prepare('SELECT * FROM quote_requests WHERE id = ?').get(id);
 if (!qr) { res.writeHead(404); return res.end('견적요청을 찾을 수 없습니다.'); }
-const items = db.prepare('SELECT * FROM quote_items WHERE quote_request_id = ?').all(id);
-const assignments = db.prepare('SELECT * FROM vendor_assignments WHERE quote_request_id = ?').all(id);
-const vendors = db.prepare('SELECT * FROM vendors ORDER BY category1, name').all();
+const items = await db.prepare('SELECT * FROM quote_items WHERE quote_request_id = ?').all(id);
+const assignments = await db.prepare('SELECT * FROM vendor_assignments WHERE quote_request_id = ?').all(id);
+const vendors = await db.prepare('SELECT * FROM vendors ORDER BY category1, name').all();
 const vendorsByCategory = {};
 for (const v of vendors) {
 if (!assignments.find((a) => a.vendor_id === v.id)) continue;
@@ -2635,36 +2634,36 @@ vendorsByCategory[key].push(v);
 const submissionsByItem = {};
 const selections = {};
 for (const it of items) {
-const { submissions, selected } = computeSelectionForItem(it.id);
+const { submissions, selected } = await computeSelectionForItem(it.id);
 submissionsByItem[it.id] = submissions;
 if (selected) selections[it.id] = selected;
 }
 
-const onsiteContacts = qr.site_id ? getOnsiteContacts(qr.site_id) : [];
+const onsiteContacts = qr.site_id ? await getOnsiteContacts(qr.site_id) : [];
 res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
 res.end(views.quoteRequestDetailPage({ user: u, qr, items, assignments, vendorsByCategory, submissionsByItem, selections, buyerLabels: Object.keys(BUYERS), hasSite: !!qr.site_id, onsiteContacts }));
 });
 
 // ---------- 관리자: 업체별 발주서 생성 ----------
-router.get('/admin/quote-requests/:id/po/:vendorId', (req, res) => {
+router.get('/admin/quote-requests/:id/po/:vendorId', async (req, res) => {
 const u = requireLogin('admin')(req, res);
 if (!u) return;
 if (!PO_TEMPLATE) { res.writeHead(500); return res.end('발주서 템플릿을 찾을 수 없습니다.'); }
 
 const qrId = Number(req.params.id);
 const vendorId = Number(req.params.vendorId);
-const qr = db.prepare('SELECT * FROM quote_requests WHERE id = ?').get(qrId);
+const qr = await db.prepare('SELECT * FROM quote_requests WHERE id = ?').get(qrId);
 if (!qr) { res.writeHead(404); return res.end('견적요청을 찾을 수 없습니다.'); }
 if (!qr.site_id) { res.writeHead(400); return res.end('이 견적요청에는 사업장이 지정되어 있지 않습니다. 견적요청 수정에서 사업장을 지정해주세요.'); }
-const site = db.prepare('SELECT * FROM sites WHERE id = ?').get(qr.site_id);
+const site = await db.prepare('SELECT * FROM sites WHERE id = ?').get(qr.site_id);
 if (!site) { res.writeHead(404); return res.end('사업장 정보를 찾을 수 없습니다.'); }
-const vendor = db.prepare('SELECT * FROM vendors WHERE id = ?').get(vendorId);
+const vendor = await db.prepare('SELECT * FROM vendors WHERE id = ?').get(vendorId);
 if (!vendor) { res.writeHead(404); return res.end('업체를 찾을 수 없습니다.'); }
 
-const items = db.prepare('SELECT * FROM quote_items WHERE quote_request_id = ?').all(qrId);
+const items = await db.prepare('SELECT * FROM quote_items WHERE quote_request_id = ?').all(qrId);
 const poItems = [];
 for (const it of items) {
-const { selected } = computeSelectionForItem(it.id);
+const { selected } = await computeSelectionForItem(it.id);
 if (selected && selected.vendor_id === vendorId) {
 poItems.push({ name: selected.product_name, spec: selected.spec, qty: selected.qty, unit: selected.unit, unitPrice: selected.unit_price });
 }
@@ -2676,7 +2675,7 @@ const orderDateStr = /^\d{4}-\d{2}-\d{2}$/.test(req.query.orderDate || '') ? req
 
 let effectiveOnsiteContact = site.onsite_contact || '';
 if (req.query.onsiteContactId) {
-const contact = db.prepare('SELECT * FROM onsite_contacts WHERE id = ? AND site_id = ?').get(Number(req.query.onsiteContactId), site.id);
+const contact = await db.prepare('SELECT * FROM onsite_contacts WHERE id = ? AND site_id = ?').get(Number(req.query.onsiteContactId), site.id);
 if (contact) effectiveOnsiteContact = contact.phone ? `${contact.name} ${contact.phone}` : contact.name;
 }
 
@@ -2708,23 +2707,23 @@ res.end(buf);
 });
 
 // ---------- 관리자: 견적요청 수정 ----------
-router.get('/admin/quote-requests/:id/edit', (req, res) => {
+router.get('/admin/quote-requests/:id/edit', async (req, res) => {
 const u = requireLogin('admin')(req, res);
 if (!u) return;
 const id = Number(req.params.id);
-const qr = db.prepare('SELECT * FROM quote_requests WHERE id = ?').get(id);
+const qr = await db.prepare('SELECT * FROM quote_requests WHERE id = ?').get(id);
 if (!qr) { res.writeHead(404); return res.end('견적요청을 찾을 수 없습니다.'); }
-const items = db.prepare('SELECT * FROM quote_items WHERE quote_request_id = ?').all(id);
-const assignments = db.prepare('SELECT * FROM vendor_assignments WHERE quote_request_id = ?').all(id);
-const vendors = db.prepare('SELECT * FROM vendors WHERE active = 1 ORDER BY category1, name').all();
+const items = await db.prepare('SELECT * FROM quote_items WHERE quote_request_id = ?').all(id);
+const assignments = await db.prepare('SELECT * FROM vendor_assignments WHERE quote_request_id = ?').all(id);
+const vendors = await db.prepare('SELECT * FROM vendors WHERE active = 1 ORDER BY category1, name').all();
 const vendorsByCategory = {};
 for (const v of vendors) {
 const key = v.category1 || '미분류';
 if (!vendorsByCategory[key]) vendorsByCategory[key] = [];
 vendorsByCategory[key].push(v);
 }
-const cat1Options = getCategoryOptions('cat1').map((o) => o.label);
-const sites = getSites();
+const cat1Options = (await getCategoryOptions('cat1')).map((o) => o.label);
+const sites = await getSites();
 res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
 res.end(views.quoteRequestEditPage({ user: u, qr, items, vendorsByCategory, assignments, cat1Options, sites }));
 });
@@ -2733,7 +2732,7 @@ router.post('/admin/quote-requests/:id/edit', async (req, res) => {
 const u = requireLogin('admin')(req, res);
 if (!u) return;
 const id = Number(req.params.id);
-const qr = db.prepare('SELECT * FROM quote_requests WHERE id = ?').get(id);
+const qr = await db.prepare('SELECT * FROM quote_requests WHERE id = ?').get(id);
 if (!qr) { res.writeHead(404); return res.end('견적요청을 찾을 수 없습니다.'); }
 
 const body = await parseBody(req);
@@ -2741,7 +2740,7 @@ const files = req.files || {};
 const title = (body.title || '').trim();
 if (!title) return redirect(res, `/admin/quote-requests/${id}/edit`);
 
-db.prepare(`
+await db.prepare(`
 UPDATE quote_requests SET title = ?, submission_deadline = ?, requested_delivery_date = ?, site_id = ?, manager_name = ?, manager_email = ? WHERE id = ?
 `).run(title, body.submission_deadline || null, body.requested_delivery_date || null, body.site_id ? Number(body.site_id) : null, (body.manager_name || '').trim(), (body.manager_email || '').trim(), id);
 
@@ -2760,29 +2759,29 @@ const deleteItem = db.prepare('DELETE FROM quote_items WHERE id=? AND quote_requ
 for (let i = 0; i < names.length; i++) {
 const itemId = itemIds[i] ? Number(itemIds[i]) : null;
 if (itemId && removeIds.has(itemId)) {
-deleteItem.run(itemId, id);
+await deleteItem.run(itemId, id);
 continue;
 }
 if (!names[i] || !names[i].trim()) continue;
 if (itemId) {
-updateItem.run(names[i].trim(), specs[i] || '', Number(qtys[i]) || 1, units[i] || '', itemId, id);
+await updateItem.run(names[i].trim(), specs[i] || '', Number(qtys[i]) || 1, units[i] || '', itemId, id);
 } else {
-insertItem.run(id, names[i].trim(), specs[i] || '', Number(qtys[i]) || 1, units[i] || '');
+await insertItem.run(id, names[i].trim(), specs[i] || '', Number(qtys[i]) || 1, units[i] || '');
 }
 }
 for (const it of parseItemsExcel(files.items_excel)) {
-insertItem.run(id, it.name, it.spec, it.qty, it.unit);
+await insertItem.run(id, it.name, it.spec, it.qty, it.unit);
 }
 
 // ---- 업체 배정 동기화 (기존 배정을 지우고 다시 반영) ----
 const viewIds = new Set(toArray(body.assign_view).map(Number));
 const submitIds = new Set(toArray(body.assign_submit).map(Number));
 const allIds = new Set([...viewIds, ...submitIds]);
-db.prepare('DELETE FROM vendor_assignments WHERE quote_request_id = ?').run(id);
+await db.prepare('DELETE FROM vendor_assignments WHERE quote_request_id = ?').run(id);
 const insertAssign = db.prepare('INSERT OR REPLACE INTO vendor_assignments (quote_request_id, vendor_id, permission) VALUES (?, ?, ?)');
 for (const vid of allIds) {
 const perm = submitIds.has(vid) ? 'submit' : 'view';
-insertAssign.run(id, vid, perm);
+await insertAssign.run(id, vid, perm);
 }
 
 redirect(res, `/admin/quote-requests/${id}`);
@@ -2796,10 +2795,10 @@ const body = await parseBody(req);
 const itemId = Number(body.quote_item_id);
 const submissionId = Number(body.submission_id);
 const reasonInput = (body.reason || '').trim();
-const item = db.prepare('SELECT * FROM quote_items WHERE id = ?').get(itemId);
+const item = await db.prepare('SELECT * FROM quote_items WHERE id = ?').get(itemId);
 if (!item) { res.writeHead(404); return res.end('품목을 찾을 수 없습니다.'); }
 
-const { submissions, minPrice } = computeSelectionForItem(itemId);
+const { submissions, minPrice } = await computeSelectionForItem(itemId);
 const target = submissions.find((s) => s.id === submissionId);
 if (!target) {
 res.writeHead(400, { 'Content-Type': 'text/plain; charset=utf-8' });
@@ -2812,7 +2811,7 @@ return res.end('최저가가 아닌 업체를 선정하려면 선정 사유를 �
 }
 const reasonToStore = isLowest ? '' : reasonInput;
 
-db.prepare(`
+await db.prepare(`
 INSERT INTO final_selections (quote_item_id, submission_id, reason, selected_at) VALUES (?, ?, ?, ?)
 ON CONFLICT(quote_item_id) DO UPDATE SET submission_id = excluded.submission_id, reason = excluded.reason, selected_at = excluded.selected_at
 `).run(itemId, submissionId, reasonToStore, new Date().toISOString());
@@ -2821,10 +2820,10 @@ redirect(res, `/admin/quote-requests/${item.quote_request_id}`);
 });
 
 // ---------- 업체: 대시보드 ----------
-router.get('/vendor', (req, res) => {
+router.get('/vendor', async (req, res) => {
 const u = requireLogin('vendor')(req, res);
 if (!u) return;
-const rows = db.prepare(`
+const rows = await db.prepare(`
 SELECT qr.*, va.permission FROM vendor_assignments va
 JOIN quote_requests qr ON qr.id = va.quote_request_id
 WHERE va.vendor_id = ?
@@ -2834,15 +2833,15 @@ res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
 res.end(views.vendorDashboard({ user: u, requests: rows }));
 });
 
-router.get('/vendor/quote-requests/:id', (req, res) => {
+router.get('/vendor/quote-requests/:id', async (req, res) => {
 const u = requireLogin('vendor')(req, res);
 if (!u) return;
 const id = Number(req.params.id);
-const assign = db.prepare('SELECT * FROM vendor_assignments WHERE quote_request_id = ? AND vendor_id = ?').get(id, u.userId);
+const assign = await db.prepare('SELECT * FROM vendor_assignments WHERE quote_request_id = ? AND vendor_id = ?').get(id, u.userId);
 if (!assign) { res.writeHead(403); return res.end('접근 권한이 없습니다.'); }
-const qr = db.prepare('SELECT * FROM quote_requests WHERE id = ?').get(id);
-const items = db.prepare('SELECT * FROM quote_items WHERE quote_request_id = ?').all(id);
-const mySubmissions = db.prepare(`
+const qr = await db.prepare('SELECT * FROM quote_requests WHERE id = ?').get(id);
+const items = await db.prepare('SELECT * FROM quote_items WHERE quote_request_id = ?').all(id);
+const mySubmissions = await db.prepare(`
 SELECT s.* FROM submissions s
 JOIN quote_items qi ON qi.id = s.quote_item_id
 WHERE qi.quote_request_id = ? AND s.vendor_id = ?
@@ -2855,21 +2854,21 @@ router.post('/vendor/quote-requests/:id/submissions', async (req, res) => {
 const u = requireLogin('vendor')(req, res);
 if (!u) return;
 const id = Number(req.params.id);
-const assign = db.prepare('SELECT * FROM vendor_assignments WHERE quote_request_id = ? AND vendor_id = ?').get(id, u.userId);
+const assign = await db.prepare('SELECT * FROM vendor_assignments WHERE quote_request_id = ? AND vendor_id = ?').get(id, u.userId);
 if (!assign || assign.permission !== 'submit') { res.writeHead(403); return res.end('견적입력 권한이 없습니다.'); }
 
 const body = await parseBody(req);
 const itemId = Number(body.quote_item_id);
-const item = db.prepare('SELECT * FROM quote_items WHERE id = ? AND quote_request_id = ?').get(itemId, id);
+const item = await db.prepare('SELECT * FROM quote_items WHERE id = ? AND quote_request_id = ?').get(itemId, id);
 if (!item) { res.writeHead(404); return res.end('품목을 찾을 수 없습니다.'); }
 const type = body.type === 'substitute' ? 'substitute' : 'requested';
 
 if (type === 'requested') {
-const existing = db.prepare("SELECT id FROM submissions WHERE quote_item_id=? AND vendor_id=? AND type='requested'").get(itemId, u.userId);
+const existing = await db.prepare("SELECT id FROM submissions WHERE quote_item_id=? AND vendor_id=? AND type='requested'").get(itemId, u.userId);
 if (existing) return redirect(res, `/vendor/quote-requests/${id}`);
 }
 
-db.prepare(`
+await db.prepare(`
 INSERT INTO submissions (quote_item_id, vendor_id, type, product_name, spec, qty, unit, unit_price, delivery_date, manufacturer, substitute_reason, note, submitted_at)
 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 `).run(
@@ -2884,13 +2883,13 @@ notifyManagerOfSubmission(req, id, u).catch(() => {});
 redirect(res, `/vendor/quote-requests/${id}`);
 });
 
-router.get('/vendor/quote-requests/:id/submissions-template', (req, res) => {
+router.get('/vendor/quote-requests/:id/submissions-template', async (req, res) => {
 const u = requireLogin('vendor')(req, res);
 if (!u) return;
 const id = Number(req.params.id);
-const assign = db.prepare('SELECT * FROM vendor_assignments WHERE quote_request_id = ? AND vendor_id = ?').get(id, u.userId);
+const assign = await db.prepare('SELECT * FROM vendor_assignments WHERE quote_request_id = ? AND vendor_id = ?').get(id, u.userId);
 if (!assign) { res.writeHead(403); return res.end('접근 권한이 없습니다.'); }
-const items = db.prepare('SELECT * FROM quote_items WHERE quote_request_id = ?').all(id);
+const items = await db.prepare('SELECT * FROM quote_items WHERE quote_request_id = ?').all(id);
 const rows = items.map((it) => [it.item_name, '요청품', it.item_name, it.spec || '', String(it.qty), it.unit || '', '', '', '', '']);
 sendXlsxTemplate(res, '견적_일괄제출_양식.xlsx',
 ['품목명', '구분', '제안품목명', '규격', '수량', '단위', '단가', '납기일자', '제조사', '비고'],
@@ -2902,14 +2901,14 @@ router.post('/vendor/quote-requests/:id/submissions/import', async (req, res) =>
 const u = requireLogin('vendor')(req, res);
 if (!u) return;
 const id = Number(req.params.id);
-const assign = db.prepare('SELECT * FROM vendor_assignments WHERE quote_request_id = ? AND vendor_id = ?').get(id, u.userId);
+const assign = await db.prepare('SELECT * FROM vendor_assignments WHERE quote_request_id = ? AND vendor_id = ?').get(id, u.userId);
 if (!assign || assign.permission !== 'submit') { res.writeHead(403); return res.end('견적입력 권한이 없습니다.'); }
 
 await parseBody(req);
 const files = req.files || {};
 if (!files.submissions_excel || !files.submissions_excel.data) return redirect(res, `/vendor/quote-requests/${id}`);
 
-const items = db.prepare('SELECT * FROM quote_items WHERE quote_request_id = ?').all(id);
+const items = await db.prepare('SELECT * FROM quote_items WHERE quote_request_id = ?').all(id);
 const itemByName = new Map(items.map((it) => [it.item_name.trim().toLowerCase(), it]));
 
 let rows;
@@ -2933,10 +2932,10 @@ const item = itemByName.get(String(itemNameRaw || '').trim().toLowerCase());
 if (!item) { skipped++; continue; }
 const type = String(typeRaw || '').includes('대체') ? 'substitute' : 'requested';
 if (type === 'requested') {
-const existing = db.prepare("SELECT id FROM submissions WHERE quote_item_id=? AND vendor_id=? AND type='requested'").get(item.id, u.userId);
+const existing = await db.prepare("SELECT id FROM submissions WHERE quote_item_id=? AND vendor_id=? AND type='requested'").get(item.id, u.userId);
 if (existing) { skipped++; continue; }
 }
-insertSub.run(
+await insertSub.run(
 item.id, u.userId, type,
 productName || item.item_name, spec || '', Number(qty) || 1, unit || '',
 Number(unitPrice) || 0, deliveryDate || null, manufacturer || '',
@@ -2952,7 +2951,7 @@ redirect(res, `/vendor/quote-requests/${id}`);
 
 // 업체가 견적을 제출하면 해당 견적요청의 담당자에게 알림 메일을 보낸다.
 async function notifyManagerOfSubmission(req, quoteRequestId, vendorUser) {
-const qr = db.prepare('SELECT * FROM quote_requests WHERE id = ?').get(quoteRequestId);
+const qr = await db.prepare('SELECT * FROM quote_requests WHERE id = ?').get(quoteRequestId);
 if (!qr || !qr.manager_email) return;
 const baseUrl = `${isHttps(req) ? 'https' : 'http'}://${req.headers.host}`;
 await mail.sendMail({
@@ -2973,6 +2972,14 @@ res.end('페이지를 찾을 수 없습니다.');
 }
 });
 
+// DB(Turso) 초기화가 끝난 뒤에만 서버를 listen 시작한다.
+initDb()
+.then(() => {
 server.listen(PORT, () => {
 console.log(`힐마루 견적관리 서버 실행 중: http://localhost:${PORT}`);
+});
+})
+.catch((err) => {
+console.error('[초기화 실패] DB 초기화 중 오류가 발생하여 서버를 시작할 수 없습니다:', err);
+process.exit(1);
 });

@@ -4,5 +4,6 @@
   "description": "힐마루 견적관리 시스템",
   "main": "server.js",
   "scripts": { "start": "node server.js" },
-  "engines": { "node": ">=22.5.0" }
+  "engines": { "node": ">=22.5.0" },
+  "dependencies": { "@libsql/client": "^0.17.4" }
 }
