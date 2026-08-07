@@ -379,7 +379,10 @@ quote_request_id INTEGER NOT NULL REFERENCES quote_requests(id) ON DELETE CASCAD
 item_name TEXT NOT NULL,
 spec TEXT DEFAULT '',
 qty INTEGER NOT NULL DEFAULT 1,
-unit TEXT DEFAULT ''
+unit TEXT DEFAULT '',
+category1 TEXT DEFAULT '',
+category2 TEXT DEFAULT '',
+category3 TEXT DEFAULT ''
 );
 CREATE TABLE IF NOT EXISTS vendor_assignments (
 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -451,6 +454,12 @@ const finalSelCols = (await db.prepare("PRAGMA table_info(final_selections)").al
 if (!finalSelCols.includes('reason')) {
 await db.execute("ALTER TABLE final_selections ADD COLUMN reason TEXT DEFAULT ''");
 }
+
+// quote_items에 카테고리(과목1/2/3 대응) 컬럼이 없던 예전 DB 대응
+const qiCols = (await db.prepare("PRAGMA table_info(quote_items)").all()).map((c) => c.name);
+if (!qiCols.includes('category1')) await db.execute("ALTER TABLE quote_items ADD COLUMN category1 TEXT DEFAULT ''");
+if (!qiCols.includes('category2')) await db.execute("ALTER TABLE quote_items ADD COLUMN category2 TEXT DEFAULT ''");
+if (!qiCols.includes('category3')) await db.execute("ALTER TABLE quote_items ADD COLUMN category3 TEXT DEFAULT ''");
 
 if (vendorCols.includes('category') && vendorCols.includes('category1')) {
 // 예전 단일 category 값을 category1로 옮겨준다 (비어있는 경우에만)
@@ -1166,7 +1175,7 @@ const body = `
 <div class="section-actions">
 <h1>관리자 대시보드</h1>
 <div>
-<a class="btn secondary" href="/admin/quote-requests/export-results" style="margin-right:8px;">↓ 전체 선정결과 다운로드(.xlsx)</a>
+<a class="btn secondary" href="/admin/quote-requests/export-results" style="margin-right:8px;">↓ 구매Data 다운로드(.xlsx)</a>
 <a class="btn" href="/admin/quote-requests/new">+ 새 견적요청</a>
 </div>
 </div>
@@ -1447,7 +1456,20 @@ ${(onsiteContacts || []).map((c) => `
 return layout({ title: '사업장 관리', body, user, flash });
 }
 
-function quoteRequestNewPage({ user, vendorsByCategory, cat1Options, sites, flash }) {
+function itemCategorySelects(cat1Options, cat2Options, cat3Options, sel1, sel2, sel3) {
+return `
+<div><label>과목1(품목구분)</label>
+<select name="item_category1[]"><option value="">선택 안 함</option>${optionTags(cat1Options || [], sel1)}</select>
+</div>
+<div><label>과목2</label>
+<select name="item_category2[]"><option value="">선택 안 함</option>${optionTags(cat2Options || [], sel2)}</select>
+</div>
+<div><label>과목3</label>
+<select name="item_category3[]"><option value="">선택 안 함</option>${optionTags(cat3Options || [], sel3)}</select>
+</div>`;
+}
+
+function quoteRequestNewPage({ user, vendorsByCategory, cat1Options, cat2Options, cat3Options, sites, flash }) {
 const groups = [...cat1Options, ...Object.keys(vendorsByCategory).filter((k) => !cat1Options.includes(k))];
 const catBlocks = groups.map((cat) => {
 const vs = vendorsByCategory[cat] || [];
@@ -1495,8 +1517,10 @@ ${siteOptions}
 <div><label>규격</label><input type="text" name="item_spec[]"></div>
 <div><label>수량</label><input type="number" name="item_qty[]" value="1" min="1"></div>
 <div><label>단위</label><input type="text" name="item_unit[]" placeholder="예) 포, 톤, EA"></div>
+${itemCategorySelects(cat1Options, cat2Options, cat3Options)}
 </div>
 </div>
+<p class="hint">과목1/2/3은 나중에 구매Data를 다운로드해서 구매 실적 보고서를 만들 때 품목 분류로 쓰입니다. 목록에 없는 값이 필요하면 <a href="/admin/categories" target="_blank">카테고리 관리</a>에서 먼저 추가해주세요.</p>
 <button type="button" class="btn secondary small" onclick="addItemRow()">+ 품목 추가</button>
 <div style="margin-top:14px;">
 <label>또는 엑셀로 품목 일괄 등록</label>
@@ -1517,6 +1541,7 @@ function addItemRow() {
 const wrap = document.getElementById('items-wrap');
 const row = wrap.firstElementChild.cloneNode(true);
 row.querySelectorAll('input').forEach(i => { if (i.name === 'item_qty[]') i.value = 1; else i.value = ''; });
+row.querySelectorAll('select').forEach(s => { s.selectedIndex = 0; });
 wrap.appendChild(row);
 }
 </script>
@@ -1524,7 +1549,7 @@ wrap.appendChild(row);
 return layout({ title: '새 견적요청', body, user, flash });
 }
 
-function quoteRequestEditPage({ user, qr, items, vendorsByCategory, assignments, cat1Options, sites, flash }) {
+function quoteRequestEditPage({ user, qr, items, vendorsByCategory, assignments, cat1Options, cat2Options, cat3Options, sites, flash }) {
 const groups = [...cat1Options, ...Object.keys(vendorsByCategory).filter((k) => !cat1Options.includes(k))];
 const assignedViewIds = new Set(assignments.filter((a) => a.permission !== 'submit').map((a) => a.vendor_id));
 const assignedSubmitIds = new Set(assignments.filter((a) => a.permission === 'submit').map((a) => a.vendor_id));
@@ -1556,6 +1581,7 @@ const itemRows = items.map((it) => `
 <div><label>규격</label><input type="text" name="item_spec[]" value="${escapeHtml(it.spec || '')}"></div>
 <div><label>수량</label><input type="number" name="item_qty[]" value="${it.qty}" min="1"></div>
 <div><label>단위</label><input type="text" name="item_unit[]" value="${escapeHtml(it.unit || '')}"></div>
+${itemCategorySelects(cat1Options, cat2Options, cat3Options, it.category1 || '', it.category2 || '', it.category3 || '')}
 <div style="align-self:end;"><label>&nbsp;</label><label style="display:inline;margin:0;"><input type="checkbox" name="item_remove[]" value="${it.id}"> 이 품목 삭제</label></div>
 </div>`).join('');
 
@@ -1566,6 +1592,7 @@ const blankRow = `
 <div><label>규격</label><input type="text" name="item_spec[]"></div>
 <div><label>수량</label><input type="number" name="item_qty[]" value="1" min="1"></div>
 <div><label>단위</label><input type="text" name="item_unit[]"></div>
+${itemCategorySelects(cat1Options, cat2Options, cat3Options)}
 <div style="align-self:end;"><label>&nbsp;</label><span class="hint">신규 품목</span></div>
 </div>`;
 
@@ -1681,7 +1708,7 @@ const rows = subs
 return `
 <div class="card">
 <div class="section-actions">
-<h3 style="margin:0;">${escapeHtml(it.item_name)} <span class="hint">(${escapeHtml(it.spec || '')} · ${it.qty}${escapeHtml(it.unit || '')})</span></h3>
+<h3 style="margin:0;">${escapeHtml(it.item_name)} <span class="hint">(${escapeHtml(it.spec || '')} · ${it.qty}${escapeHtml(it.unit || '')})</span> ${[it.category1, it.category2, it.category3].filter(Boolean).length ? `<span class="hint">[${escapeHtml([it.category1, it.category2, it.category3].filter(Boolean).join(' / '))}]</span>` : ''}</h3>
 ${sel ? '<span class="badge selected">선정 완료</span>' : '<span class="hint">미선정</span>'}
 </div>
 ${subs.length === 0 ? '<p class="hint">아직 제출된 견적이 없습니다.</p>' : `
@@ -2121,6 +2148,9 @@ qi.item_name AS req_item_name,
 qi.spec AS req_spec,
 qi.qty AS req_qty,
 qi.unit AS req_unit,
+qi.category1 AS category1,
+qi.category2 AS category2,
+qi.category3 AS category3,
 v.name AS vendor_name,
 sub.product_name AS product_name,
 sub.spec AS sub_spec,
@@ -2142,15 +2172,24 @@ JOIN quote_requests qr ON qr.id = qi.quote_request_id
 LEFT JOIN sites st ON st.id = qr.site_id
 ORDER BY qr.id DESC, qi.id
 `).all();
-const headers = ['견적요청명', '사업장', '제출마감일', '요청납기일', '요청품목명', '요청규격', '요청수량', '요청단위', '선정업체', '납품제품명', '납품규격', '납품수량', '납품단위', '단가', '합계금액', '제조사', '납품희망일', '제출구분', '대체제안사유', '선정사유', '선정일시'];
-const dataRows = rows.map((r) => [
-r.request_title, r.site_name || '', r.submission_deadline || '', r.requested_delivery_date || '',
-r.req_item_name, r.req_spec || '', r.req_qty, r.req_unit || '',
-r.vendor_name, r.product_name, r.sub_spec || '', r.sub_qty, r.sub_unit || '',
-r.unit_price, r.total_price, r.manufacturer || '', r.delivery_date || '',
-r.sub_type === 'substitute' ? '대체품' : '요청품', r.substitute_reason || '', r.selection_reason || '', r.selected_at || '',
-]);
-sendXlsxTemplate(res, `견적선정결과_전체_${new Date().toISOString().slice(0, 10)}.xlsx`, headers, dataRows);
+// 구매 실적 보고서 스킬(hillmaru-purchase-performance-report)이 읽는 원본 구매데이터 양식과
+// 최대한 동일하게 맞춘 24개 컬럼. 헤더는 3행(header=2)에 오도록 1~2행은 비워둔다.
+// 견적 시스템에 없는 항목(담당자/요청부서/과목1~3/품의번호/대금지급 관련/지급처)은 빈 칸으로 둔다 —
+// 특히 과목3(품목구분)이 비어 있으면 그 스킬의 카테고리별 집계가 전부 "누락"으로 잡히니,
+// 필요하면 카테고리 값을 채워서 다시 받아야 한다.
+const PURCHASE_DATA_COLS = ['담당자', '연도', '사업장', '요청부서', '과목1', '과목2', '과목3', '품의번호', '제목', '업체명', '발주일', '입고일', '제품구분', '제품명', '규격', '발주수량', '단가', '공급가', '입고수량', '포장단위', '대금지급일', '대금지급', '지급처', '비고'];
+const dataRows = rows.map((r) => {
+const orderDate = (r.selected_at || '').slice(0, 10);
+const year = (r.selected_at || '').slice(0, 4);
+const siteBare = (r.site_name || '').replace(/^힐마루\s*/, '');
+return [
+'', year, siteBare, '', r.category1 || '', r.category2 || '', r.category3 || '', '', r.request_title, r.vendor_name,
+orderDate, r.delivery_date || '', r.sub_type === 'substitute' ? '대체품' : '요청품',
+r.product_name, r.sub_spec || '', r.sub_qty, r.unit_price, r.total_price, r.sub_qty, r.sub_unit || '',
+'', '', '', r.selection_reason || r.substitute_reason || '',
+];
+});
+sendXlsxTemplate(res, `구매Data_${new Date().toISOString().slice(0, 10)}.xlsx`, ['구매Data'], [[], PURCHASE_DATA_COLS, ...dataRows]);
 });
 
 router.get('/admin', async (req, res) => {
@@ -2580,17 +2619,19 @@ if (!vendorsByCategory[key]) vendorsByCategory[key] = [];
 vendorsByCategory[key].push(v);
 }
 const cat1Options = (await getCategoryOptions('cat1')).map((o) => o.label);
+const cat2Options = (await getCategoryOptions('cat2')).map((o) => o.label);
+const cat3Options = (await getCategoryOptions('cat3')).map((o) => o.label);
 const sites = await getSites();
 res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
-res.end(views.quoteRequestNewPage({ user: u, vendorsByCategory, cat1Options, sites }));
+res.end(views.quoteRequestNewPage({ user: u, vendorsByCategory, cat1Options, cat2Options, cat3Options, sites }));
 });
 
 router.get('/admin/quote-requests/items-template', (req, res) => {
 const u = requireLogin('admin')(req, res);
 if (!u) return;
 sendXlsxTemplate(res, '견적요청_품목_일괄등록_양식.xlsx',
-['품목명', '규격', '수량', '단위'],
-[['예) 비료', '20kg', '10', '포']]
+['품목명', '규격', '수량', '단위', '과목1', '과목2', '과목3'],
+[['예) 비료', '20kg', '10', '포', '코스', '저장품', '']]
 );
 });
 
@@ -2615,7 +2656,10 @@ const r = rows[i];
 if (xlsxRowIsEmpty(r)) continue;
 const name = (r[0] || '').trim();
 if (!name) continue;
-out.push({ name, spec: (r[1] || '').trim(), qty: Number(r[2]) || 1, unit: (r[3] || '').trim() });
+out.push({
+name, spec: (r[1] || '').trim(), qty: Number(r[2]) || 1, unit: (r[3] || '').trim(),
+category1: (r[4] || '').trim(), category2: (r[5] || '').trim(), category3: (r[6] || '').trim(),
+});
 }
 return out;
 }
@@ -2641,13 +2685,16 @@ const names = toArray(body['item_name[]']);
 const specs = toArray(body['item_spec[]']);
 const qtys = toArray(body['item_qty[]']);
 const units = toArray(body['item_unit[]']);
-const insertItem = db.prepare('INSERT INTO quote_items (quote_request_id, item_name, spec, qty, unit) VALUES (?, ?, ?, ?, ?)');
+const cat1s = toArray(body['item_category1[]']);
+const cat2s = toArray(body['item_category2[]']);
+const cat3s = toArray(body['item_category3[]']);
+const insertItem = db.prepare('INSERT INTO quote_items (quote_request_id, item_name, spec, qty, unit, category1, category2, category3) VALUES (?, ?, ?, ?, ?, ?, ?, ?)');
 for (let i = 0; i < names.length; i++) {
 if (!names[i] || !names[i].trim()) continue;
-await insertItem.run(qrId, names[i].trim(), specs[i] || '', Number(qtys[i]) || 1, units[i] || '');
+await insertItem.run(qrId, names[i].trim(), specs[i] || '', Number(qtys[i]) || 1, units[i] || '', cat1s[i] || '', cat2s[i] || '', cat3s[i] || '');
 }
 for (const it of parseItemsExcel(files.items_excel)) {
-await insertItem.run(qrId, it.name, it.spec, it.qty, it.unit);
+await insertItem.run(qrId, it.name, it.spec, it.qty, it.unit, it.category1 || '', it.category2 || '', it.category3 || '');
 }
 
 const viewIds = new Set(toArray(body.assign_view).map(Number));
@@ -2789,9 +2836,11 @@ if (!vendorsByCategory[key]) vendorsByCategory[key] = [];
 vendorsByCategory[key].push(v);
 }
 const cat1Options = (await getCategoryOptions('cat1')).map((o) => o.label);
+const cat2Options = (await getCategoryOptions('cat2')).map((o) => o.label);
+const cat3Options = (await getCategoryOptions('cat3')).map((o) => o.label);
 const sites = await getSites();
 res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
-res.end(views.quoteRequestEditPage({ user: u, qr, items, vendorsByCategory, assignments, cat1Options, sites }));
+res.end(views.quoteRequestEditPage({ user: u, qr, items, vendorsByCategory, assignments, cat1Options, cat2Options, cat3Options, sites }));
 });
 
 router.post('/admin/quote-requests/:id/edit', async (req, res) => {
@@ -2816,10 +2865,13 @@ const names = toArray(body['item_name[]']);
 const specs = toArray(body['item_spec[]']);
 const qtys = toArray(body['item_qty[]']);
 const units = toArray(body['item_unit[]']);
+const cat1s = toArray(body['item_category1[]']);
+const cat2s = toArray(body['item_category2[]']);
+const cat3s = toArray(body['item_category3[]']);
 const removeIds = new Set(toArray(body['item_remove[]']).map(Number));
 
-const updateItem = db.prepare('UPDATE quote_items SET item_name=?, spec=?, qty=?, unit=? WHERE id=? AND quote_request_id=?');
-const insertItem = db.prepare('INSERT INTO quote_items (quote_request_id, item_name, spec, qty, unit) VALUES (?, ?, ?, ?, ?)');
+const updateItem = db.prepare('UPDATE quote_items SET item_name=?, spec=?, qty=?, unit=?, category1=?, category2=?, category3=? WHERE id=? AND quote_request_id=?');
+const insertItem = db.prepare('INSERT INTO quote_items (quote_request_id, item_name, spec, qty, unit, category1, category2, category3) VALUES (?, ?, ?, ?, ?, ?, ?, ?)');
 const deleteItem = db.prepare('DELETE FROM quote_items WHERE id=? AND quote_request_id=?');
 
 for (let i = 0; i < names.length; i++) {
@@ -2830,13 +2882,13 @@ continue;
 }
 if (!names[i] || !names[i].trim()) continue;
 if (itemId) {
-await updateItem.run(names[i].trim(), specs[i] || '', Number(qtys[i]) || 1, units[i] || '', itemId, id);
+await updateItem.run(names[i].trim(), specs[i] || '', Number(qtys[i]) || 1, units[i] || '', cat1s[i] || '', cat2s[i] || '', cat3s[i] || '', itemId, id);
 } else {
-await insertItem.run(id, names[i].trim(), specs[i] || '', Number(qtys[i]) || 1, units[i] || '');
+await insertItem.run(id, names[i].trim(), specs[i] || '', Number(qtys[i]) || 1, units[i] || '', cat1s[i] || '', cat2s[i] || '', cat3s[i] || '');
 }
 }
 for (const it of parseItemsExcel(files.items_excel)) {
-await insertItem.run(id, it.name, it.spec, it.qty, it.unit);
+await insertItem.run(id, it.name, it.spec, it.qty, it.unit, it.category1 || '', it.category2 || '', it.category3 || '');
 }
 
 // ---- 업체 배정 동기화 (기존 배정을 지우고 다시 반영) ----
