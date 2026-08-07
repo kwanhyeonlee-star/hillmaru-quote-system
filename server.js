@@ -1165,7 +1165,10 @@ ${progressBar(r.selectedCount, r.totalItems)}
 const body = `
 <div class="section-actions">
 <h1>관리자 대시보드</h1>
+<div>
+<a class="btn secondary" href="/admin/quote-requests/export-results" style="margin-right:8px;">↓ 전체 선정결과 다운로드(.xlsx)</a>
 <a class="btn" href="/admin/quote-requests/new">+ 새 견적요청</a>
+</div>
 </div>
 <div class="section-actions" style="margin-bottom:14px;">
 <div><a href="/admin/vendors">업체 관리 →</a></div>
@@ -1201,7 +1204,10 @@ const cat2Sel = editVendor ? editVendor.category2 : '';
 const cat3Sel = editVendor ? editVendor.category3 : '';
 
 const body = `
+<div class="section-actions">
 <h1>업체 관리</h1>
+<a class="btn secondary" href="/admin/vendors/export">↓ 전체 업체 다운로드(.xlsx)</a>
+</div>
 <div class="card">
 <table>
 <thead><tr><th>업체명</th><th>카테고리</th><th>담당자</th><th>이메일</th><th>로그인ID</th><th>상태</th><th>사업자등록증</th><th>통장사본</th><th></th></tr></thead>
@@ -2101,6 +2107,52 @@ selected = { ...found, selectionReason: selectedRow.reason || '', isLowestPick: 
 return { submissions, minPrice, candidates, selected };
 }
 
+// ---- 전체 견적요청의 선정 결과(품목·업체·단가 등)를 한 엑셀로 통합 다운로드 ----
+router.get('/admin/quote-requests/export-results', async (req, res) => {
+const u = requireLogin('admin')(req, res);
+if (!u) return;
+const rows = await db.prepare(`
+SELECT
+qr.title AS request_title,
+st.name AS site_name,
+qr.submission_deadline AS submission_deadline,
+qr.requested_delivery_date AS requested_delivery_date,
+qi.item_name AS req_item_name,
+qi.spec AS req_spec,
+qi.qty AS req_qty,
+qi.unit AS req_unit,
+v.name AS vendor_name,
+sub.product_name AS product_name,
+sub.spec AS sub_spec,
+sub.qty AS sub_qty,
+sub.unit AS sub_unit,
+sub.unit_price AS unit_price,
+(sub.unit_price * sub.qty) AS total_price,
+sub.manufacturer AS manufacturer,
+sub.delivery_date AS delivery_date,
+sub.type AS sub_type,
+sub.substitute_reason AS substitute_reason,
+fs.reason AS selection_reason,
+fs.selected_at AS selected_at
+FROM final_selections fs
+JOIN submissions sub ON sub.id = fs.submission_id
+JOIN vendors v ON v.id = sub.vendor_id
+JOIN quote_items qi ON qi.id = fs.quote_item_id
+JOIN quote_requests qr ON qr.id = qi.quote_request_id
+LEFT JOIN sites st ON st.id = qr.site_id
+ORDER BY qr.id DESC, qi.id
+`).all();
+const headers = ['견적요청명', '사업장', '제출마감일', '요청납기일', '요청품목명', '요청규격', '요청수량', '요청단위', '선정업체', '납품제품명', '납품규격', '납품수량', '납품단위', '단가', '합계금액', '제조사', '납품희망일', '제출구분', '대체제안사유', '선정사유', '선정일시'];
+const dataRows = rows.map((r) => [
+r.request_title, r.site_name || '', r.submission_deadline || '', r.requested_delivery_date || '',
+r.req_item_name, r.req_spec || '', r.req_qty, r.req_unit || '',
+r.vendor_name, r.product_name, r.sub_spec || '', r.sub_qty, r.sub_unit || '',
+r.unit_price, r.total_price, r.manufacturer || '', r.delivery_date || '',
+r.sub_type === 'substitute' ? '대체품' : '요청품', r.substitute_reason || '', r.selection_reason || '', r.selected_at || '',
+]);
+sendXlsxTemplate(res, `견적선정결과_전체_${new Date().toISOString().slice(0, 10)}.xlsx`, headers, dataRows);
+});
+
 router.get('/admin', async (req, res) => {
 const u = requireLogin('admin')(req, res);
 if (!u) return;
@@ -2373,6 +2425,20 @@ sendXlsxTemplate(res, '업체_일괄등록_양식.xlsx',
 ['업체명', '사업자번호', '담당자명', '담당자이메일', '로그인아이디', '비밀번호', '카테고리1', '카테고리2', '카테고리3', '주소', '대표자', '연락처', '종목', '업태', '은행명', '계좌번호', '예금주'],
 [['예시상사', '123-45-67890', '김담당', 'vendor@example.com', 'vendor01', 'pass1234', '코스', '', '', '서울시 ○○구', '홍길동', '010-0000-0000', '도매', '서비스업', '국민은행', '123456-78-901234', '예시상사']]
 );
+});
+
+// ---- 등록된 업체 전체를 엑셀로 다운로드 (업로드 양식과 반대 방향) ----
+router.get('/admin/vendors/export', async (req, res) => {
+const u = requireLogin('admin')(req, res);
+if (!u) return;
+const vendors = await db.prepare('SELECT * FROM vendors ORDER BY category1, name').all();
+const headers = ['업체명', '사업자번호', '담당자명', '담당자이메일', '로그인아이디', '카테고리1', '카테고리2', '카테고리3', '주소', '대표자', '연락처', '종목', '업태', '은행명', '계좌번호', '예금주', '사용여부', '등록일'];
+const dataRows = vendors.map((v) => [
+v.name, v.biz_reg_no, v.contact_name, v.contact_email, v.login_id,
+v.category1, v.category2, v.category3, v.address, v.ceo_name, v.phone, v.item_type, v.biz_type,
+v.bank_name, v.account_number, v.account_holder, v.active ? '사용' : '비활성', v.created_at,
+]);
+sendXlsxTemplate(res, `업체목록_${new Date().toISOString().slice(0, 10)}.xlsx`, headers, dataRows);
 });
 
 router.post('/admin/vendors/import', async (req, res) => {
