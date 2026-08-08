@@ -379,6 +379,8 @@ site_id INTEGER REFERENCES sites(id),
 manager_name TEXT DEFAULT '',
 manager_email TEXT DEFAULT '',
 status TEXT NOT NULL DEFAULT 'open',
+draft_no TEXT DEFAULT '',
+draft_title TEXT DEFAULT '',
 created_at TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS quote_items (
@@ -419,6 +421,9 @@ CREATE TABLE IF NOT EXISTS final_selections (
 quote_item_id INTEGER PRIMARY KEY REFERENCES quote_items(id) ON DELETE CASCADE,
 submission_id INTEGER NOT NULL REFERENCES submissions(id) ON DELETE CASCADE,
 reason TEXT DEFAULT '',
+received_date TEXT DEFAULT '',
+payment_date TEXT DEFAULT '',
+payment_recipient TEXT DEFAULT '',
 selected_at TEXT NOT NULL
 );
 `);
@@ -456,11 +461,28 @@ await db.execute("ALTER TABLE quote_requests ADD COLUMN manager_name TEXT DEFAUL
 if (!qrCols.includes('manager_email')) {
 await db.execute("ALTER TABLE quote_requests ADD COLUMN manager_email TEXT DEFAULT ''");
 }
+// 완료 처리(기안번호/기안제목) — 구매Data 내보내기의 품의번호/제목 채우기용
+if (!qrCols.includes('draft_no')) {
+await db.execute("ALTER TABLE quote_requests ADD COLUMN draft_no TEXT DEFAULT ''");
+}
+if (!qrCols.includes('draft_title')) {
+await db.execute("ALTER TABLE quote_requests ADD COLUMN draft_title TEXT DEFAULT ''");
+}
 
 // final_selections에 reason 컬럼이 없던 예전 DB 대응
 const finalSelCols = (await db.prepare("PRAGMA table_info(final_selections)").all()).map((c) => c.name);
 if (!finalSelCols.includes('reason')) {
 await db.execute("ALTER TABLE final_selections ADD COLUMN reason TEXT DEFAULT ''");
+}
+// 완료 처리(품목별 실제 입고일자/대금지급일자/지급처) — 구매Data 내보내기의 입고일/대금지급일/지급처 채우기용
+if (!finalSelCols.includes('received_date')) {
+await db.execute("ALTER TABLE final_selections ADD COLUMN received_date TEXT DEFAULT ''");
+}
+if (!finalSelCols.includes('payment_date')) {
+await db.execute("ALTER TABLE final_selections ADD COLUMN payment_date TEXT DEFAULT ''");
+}
+if (!finalSelCols.includes('payment_recipient')) {
+await db.execute("ALTER TABLE final_selections ADD COLUMN payment_recipient TEXT DEFAULT ''");
 }
 
 // quote_items에 카테고리(과목1/2/3 대응) 컬럼이 없던 예전 DB 대응
@@ -1858,6 +1880,35 @@ ${contactOpts}
 ` : ''}
 <h2>배정된 업체</h2>
 <div class="card">${catBlocks || '<p class="hint">배정된 업체가 없습니다.</p>'}</div>
+${selectedCount === totalItems && totalItems > 0 ? `
+<h2>견적요청 완료 처리</h2>
+<div class="card">
+${qr.status === 'completed' ? '<div class="flash success" style="margin-bottom:12px;">완료 처리된 견적요청입니다. 아래 정보는 다시 수정해서 저장할 수 있습니다.</div>' : '<p class="hint" style="margin-top:0;">기안번호/기안제목과 품목별 실제 입고일자·대금지급일자·지급처를 입력하고 완료 처리하면, 구매Data 다운로드에 해당 정보가 빈칸 없이 채워집니다.</p>'}
+<form method="POST" action="/admin/quote-requests/${qr.id}/complete">
+<div class="form-row">
+<div><label>기안번호</label><input type="text" name="draft_no" value="${escapeHtml(qr.draft_no || '')}" placeholder="예) 2026-구매-0123"></div>
+<div><label>기안제목</label><input type="text" name="draft_title" value="${escapeHtml(qr.draft_title || '')}" placeholder="예) 코스 배토사 구매"></div>
+</div>
+<h4 style="margin:16px 0 8px;">품목별 입고/대금지급 정보</h4>
+<table>
+<thead><tr><th>품목</th><th>선정 업체</th><th>실제 입고일자</th><th>대금지급일자</th><th>지급처</th></tr></thead>
+<tbody>
+${items.filter((it) => selections[it.id]).map((it) => {
+const s = selections[it.id];
+return `<tr>
+<td>${escapeHtml(it.item_name)}<input type="hidden" name="fs_item_id[]" value="${it.id}"></td>
+<td>${escapeHtml(s.vendor_name)}</td>
+<td><input type="date" name="fs_received_date[]" value="${escapeHtml(s.receivedDate || '')}"></td>
+<td><input type="date" name="fs_payment_date[]" value="${escapeHtml(s.paymentDate || '')}"></td>
+<td><input type="text" name="fs_payment_recipient[]" value="${escapeHtml(s.paymentRecipient || '')}" placeholder="예) 계좌/업체명"></td>
+</tr>`;
+}).join('')}
+</tbody>
+</table>
+<div style="margin-top:14px;"><button type="submit" class="btn">${qr.status === 'completed' ? '완료 정보 저장' : '완료 처리'}</button></div>
+</form>
+</div>
+` : ''}
 `;
 return layout({ title: qr.title, body, user, flash });
 }
@@ -2203,7 +2254,14 @@ let selected = null;
 if (selectedRow) {
 const found = submissions.find((s) => s.id === selectedRow.submission_id);
 if (found) {
-selected = { ...found, selectionReason: selectedRow.reason || '', isLowestPick: found.unit_price === minPrice };
+selected = {
+...found,
+selectionReason: selectedRow.reason || '',
+isLowestPick: found.unit_price === minPrice,
+receivedDate: selectedRow.received_date || '',
+paymentDate: selectedRow.payment_date || '',
+paymentRecipient: selectedRow.payment_recipient || '',
+};
 }
 }
 return { submissions, minPrice, candidates, selected };
@@ -2225,6 +2283,8 @@ const whereClause = dateConditions.length ? `WHERE ${dateConditions.join(' AND '
 const rows = await db.prepare(`
 SELECT
 qr.title AS request_title,
+qr.draft_no AS draft_no,
+qr.draft_title AS draft_title,
 st.name AS site_name,
 qr.submission_deadline AS submission_deadline,
 qr.requested_delivery_date AS requested_delivery_date,
@@ -2247,7 +2307,10 @@ sub.delivery_date AS delivery_date,
 sub.type AS sub_type,
 sub.substitute_reason AS substitute_reason,
 fs.reason AS selection_reason,
-fs.selected_at AS selected_at
+fs.selected_at AS selected_at,
+fs.received_date AS received_date,
+fs.payment_date AS payment_date,
+fs.payment_recipient AS payment_recipient
 FROM final_selections fs
 JOIN submissions sub ON sub.id = fs.submission_id
 JOIN vendors v ON v.id = sub.vendor_id
@@ -2259,19 +2322,20 @@ ORDER BY qr.id DESC, qi.id
 `).all(...dateArgs);
 // 구매 실적 보고서 스킬(hillmaru-purchase-performance-report)이 읽는 원본 구매데이터 양식과
 // 최대한 동일하게 맞춘 24개 컬럼. 헤더는 3행(header=2)에 오도록 1~2행은 비워둔다.
-// 견적 시스템에 없는 항목(담당자/요청부서/과목1~3/품의번호/대금지급 관련/지급처)은 빈 칸으로 둔다 —
-// 특히 과목3(품목구분)이 비어 있으면 그 스킬의 카테고리별 집계가 전부 "누락"으로 잡히니,
-// 필요하면 카테고리 값을 채워서 다시 받아야 한다.
+// 품의번호/제목은 견적요청 완료 처리 화면에서 입력한 기안번호/기안제목을 사용한다(없으면 제목은 견적요청 제목으로 대체).
+// 입고일은 완료 처리에서 입력한 실제 입고일자를 우선 사용하고, 아직 완료 처리 전이면 업체가 제출한 납기일자로 대체한다.
+// 대금지급일/지급처도 완료 처리에서 입력한 값을 사용한다. 완료 처리 전이면 계속 빈 칸일 수 있다.
+// 견적 시스템에 아직 없는 항목(담당자/요청부서/대금지급)은 빈 칸으로 둔다.
 const PURCHASE_DATA_COLS = ['담당자', '연도', '사업장', '요청부서', '과목1', '과목2', '과목3', '품의번호', '제목', '업체명', '발주일', '입고일', '제품구분', '제품명', '규격', '발주수량', '단가', '공급가', '입고수량', '포장단위', '대금지급일', '대금지급', '지급처', '비고'];
 const dataRows = rows.map((r) => {
 const orderDate = (r.selected_at || '').slice(0, 10);
 const year = (r.selected_at || '').slice(0, 4);
 const siteBare = (r.site_name || '').replace(/^힐마루\s*/, '');
 return [
-'', year, siteBare, '', r.category1 || '', r.category2 || '', r.category3 || '', '', r.request_title, r.vendor_name,
-orderDate, r.delivery_date || '', r.sub_type === 'substitute' ? '대체품' : '요청품',
+'', year, siteBare, '', r.category1 || '', r.category2 || '', r.category3 || '', r.draft_no || '', r.draft_title || r.request_title, r.vendor_name,
+orderDate, r.received_date || r.delivery_date || '', r.sub_type === 'substitute' ? '대체품' : '요청품',
 r.product_name, r.sub_spec || '', r.sub_qty, r.unit_price, r.total_price, r.sub_qty, r.sub_unit || '',
-'', '', '', r.selection_reason || r.substitute_reason || '',
+r.payment_date || '', '', r.payment_recipient || '', r.selection_reason || r.substitute_reason || '',
 ];
 });
 const rangeLabel = (fromDate || toDate) ? `${fromDate || '처음'}~${toDate || '오늘'}` : `전체_${new Date().toISOString().slice(0, 10)}`;
@@ -2841,6 +2905,36 @@ if (selected) selections[it.id] = selected;
 const onsiteContacts = qr.site_id ? await getOnsiteContacts(qr.site_id) : [];
 res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
 res.end(views.quoteRequestDetailPage({ user: u, qr, items, assignments, vendorsByCategory, submissionsByItem, selections, buyerLabels: Object.keys(BUYERS), hasSite: !!qr.site_id, onsiteContacts }));
+});
+
+// ---------- 관리자: 견적요청 완료 처리(기안번호/기안제목 + 품목별 입고일자/대금지급일자/지급처) ----------
+router.post('/admin/quote-requests/:id/complete', async (req, res) => {
+const u = requireLogin('admin')(req, res);
+if (!u) return;
+const id = Number(req.params.id);
+const qr = await db.prepare('SELECT * FROM quote_requests WHERE id = ?').get(id);
+if (!qr) { res.writeHead(404); return res.end('견적요청을 찾을 수 없습니다.'); }
+
+const body = await parseBody(req);
+const draftNo = (body.draft_no || '').trim();
+const draftTitle = (body.draft_title || '').trim();
+
+await db.prepare("UPDATE quote_requests SET draft_no = ?, draft_title = ?, status = 'completed' WHERE id = ?")
+.run(draftNo, draftTitle, id);
+
+const itemIds = toArray(body['fs_item_id[]']).map(Number);
+const receivedDates = toArray(body['fs_received_date[]']);
+const paymentDates = toArray(body['fs_payment_date[]']);
+const paymentRecipients = toArray(body['fs_payment_recipient[]']);
+const updateFs = db.prepare(`
+UPDATE final_selections SET received_date=?, payment_date=?, payment_recipient=?
+WHERE quote_item_id=? AND quote_item_id IN (SELECT id FROM quote_items WHERE quote_request_id=?)
+`);
+for (let i = 0; i < itemIds.length; i++) {
+await updateFs.run(receivedDates[i] || '', paymentDates[i] || '', paymentRecipients[i] || '', itemIds[i], id);
+}
+
+redirect(res, `/admin/quote-requests/${id}`);
 });
 
 // ---------- 관리자: 업체별 발주서 생성 ----------
