@@ -160,13 +160,36 @@ button:hover, .btn:hover { background: #16281c; text-decoration: none; }
 .bulk-btns { margin-bottom: 8px; }
 .bulk-btns button { margin-right: 6px; }
 
-.login-wrap { max-width: 380px; margin: 72px auto; }
+.login-screen { display: flex; min-height: 100vh; }
+.login-photo-split { flex: 1.15; display: flex; flex-direction: column; min-height: 320px; }
+.login-photo-half { flex: 1; position: relative; overflow: hidden; }
+.login-photo-half::before { content: ''; position: absolute; inset: 0; background-image: var(--photo); background-size: cover; background-position: center; }
+.login-photo-half + .login-photo-half { border-top: 1px solid rgba(0,0,0,0.18); }
+.login-photo-overlay-half { position: absolute; inset: 0; background: linear-gradient(180deg, rgba(15,25,17,0.02) 0%, rgba(12,20,14,0.18) 55%, rgba(10,16,11,0.68) 100%); display: flex; flex-direction: column; justify-content: flex-end; padding: 22px 28px; }
+.login-photo-overlay-half .title { font-family: 'Noto Serif KR', serif; color: #f2efe3; font-size: 19px; letter-spacing: 1px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.login-photo-overlay-half .sub { color: #cfd6c8; font-size: 11px; letter-spacing: .5px; margin-top: 3px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.login-form-side { flex: 1; display: flex; align-items: center; justify-content: center; background: #f5f2e8; padding: 40px 24px; }
+.login-wrap { max-width: 340px; width: 100%; }
 .login-hero { text-align: center; margin-bottom: 28px; }
-.login-hero .mark { font-family: 'Noto Serif KR', serif; font-weight: 600; font-size: 30px; color: #16281c; letter-spacing: 2px; }
-.login-hero .tagline { font-size: 11px; color: #8a8266; letter-spacing: 2px; text-transform: uppercase; margin-top: 6px; }
+.login-hero .mark { font-family: 'Noto Serif KR', serif; font-weight: 600; font-size: 30px; color: #16281c; letter-spacing: 2px; white-space: nowrap; }
+.login-hero .tagline { font-size: 11px; color: #8a8266; letter-spacing: 1.5px; text-transform: uppercase; margin-top: 6px; white-space: nowrap; }
 .login-tabs { display: flex; gap: 20px; margin-bottom: 4px; border-bottom: 1px solid #e3dcc7; }
-.login-tabs a { padding: 10px 2px; color: #8a8266; font-weight: 500; font-size: 13px; letter-spacing: .3px; border-bottom: 2px solid transparent; margin-bottom: -1px; }
+.login-tabs a { padding: 10px 2px; color: #8a8266; font-weight: 500; font-size: 13px; letter-spacing: .3px; border-bottom: 2px solid transparent; margin-bottom: -1px; white-space: nowrap; }
 .login-tabs a.active { color: #16281c; border-bottom-color: #a2793e; }
+@media (max-width: 860px) {
+  .login-screen { flex-direction: column; }
+  .login-photo-split { flex-direction: row; min-height: 0; height: 190px; flex: none; }
+  .login-photo-half + .login-photo-half { border-top: none; border-left: 1px solid rgba(0,0,0,0.18); }
+  .login-photo-overlay-half { padding: 14px 16px; }
+  .login-photo-overlay-half .title { font-size: 15px; }
+  .login-form-side { padding: 32px 20px 48px; }
+}
+@media (max-width: 380px) {
+  .login-photo-overlay-half .title { font-size: 13px; }
+  .login-photo-overlay-half .sub { font-size: 10px; }
+  .login-hero .mark { font-size: 25px; }
+  .login-hero .tagline { font-size: 10px; letter-spacing: 1px; }
+}
 
 .total-box { background: #16281c; color: #f2efe3; padding: 18px 22px; border-radius: 8px; margin-top: 16px; }
 .total-box .label { font-size: 12px; color: #a9b8a3; letter-spacing: .3px; }
@@ -1359,8 +1382,40 @@ function optionTags(options, selected) {
 return options.map((o) => `<option value="${escapeHtml(o)}" ${o === selected ? 'selected' : ''}>${escapeHtml(o)}</option>`).join('');
 }
 
+// 실제 힐마루 포천/창녕 공식 홈페이지의 코스 사진을 로그인 화면에 사용한다(같은 회사 소유 이미지).
+// 포천은 클럽하우스 진입로 사진(직접 제공받은 파일)을 저장소에 넣어 자체 호스팅한다.
+const LOGIN_PHOTO_POCHEON = '/static/login_pocheon.jpg';
+const LOGIN_PHOTO_CHANGNYEONG = 'https://www.hillmaru.com/_Data/_PopUp/%EB%A9%94%EC%9D%B8_visual_1.jpg';
+
 function loginPage({ role = 'admin', error } = {}) {
-const body = `
+return `<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>로그인 · 힐마루 견적관리</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;500;600;700;800&family=Noto+Serif+KR:wght@500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body style="margin:0;">
+<div class="login-screen">
+<div class="login-photo-split">
+<div class="login-photo-half" style="--photo:url('${LOGIN_PHOTO_POCHEON}');">
+<div class="login-photo-overlay-half">
+<div class="title">힐마루 포천</div>
+<div class="sub">경기도 포천 · 45홀 퍼블릭</div>
+</div>
+</div>
+<div class="login-photo-half" style="--photo:url('${LOGIN_PHOTO_CHANGNYEONG}');">
+<div class="login-photo-overlay-half">
+<div class="title">힐마루 창녕</div>
+<div class="sub">경상남도 창녕 · 18홀 회원제 · 18홀 퍼블릭</div>
+</div>
+</div>
+</div>
+<div class="login-form-side">
 <div class="login-wrap">
 <div class="login-hero">
 <div class="mark">힐마루</div>
@@ -1381,8 +1436,11 @@ ${error ? `<div class="flash error">${escapeHtml(error)}</div>` : ''}
 <div style="margin-top:18px;"><button type="submit" style="width:100%;padding:11px;">로그인</button></div>
 </form>
 </div>
-</div>`;
-return layout({ title: '로그인', body });
+</div>
+</div>
+</div>
+</body>
+</html>`;
 }
 
 function progressBar(selected, total) {
@@ -2254,6 +2312,19 @@ const router = new Router();
 router.get('/static/style.css', (req, res) => {
 res.writeHead(200, { 'Content-Type': 'text/css; charset=utf-8' });
 res.end(STYLE_CSS);
+});
+
+const LOGIN_PHOTO_POCHEON_PATH = path.join(__dirname, 'login_pocheon.jpg');
+let LOGIN_PHOTO_POCHEON_BUF = null;
+try {
+LOGIN_PHOTO_POCHEON_BUF = fs.readFileSync(LOGIN_PHOTO_POCHEON_PATH);
+} catch (e) {
+console.warn('[경고] 로그인 화면 포천 클럽하우스 사진(login_pocheon.jpg)을 찾을 수 없습니다.');
+}
+router.get('/static/login_pocheon.jpg', (req, res) => {
+if (!LOGIN_PHOTO_POCHEON_BUF) { res.writeHead(404); return res.end(); }
+res.writeHead(200, { 'Content-Type': 'image/jpeg', 'Cache-Control': 'public, max-age=604800' });
+res.end(LOGIN_PHOTO_POCHEON_BUF);
 });
 
 // ---------- 공통 헬퍼 ----------
