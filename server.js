@@ -201,6 +201,10 @@ button:hover, .btn:hover { background: #16281c; text-decoration: none; }
 
 .hint { font-size: 12px; color: #8a8266; }
 .section-actions { display: flex; justify-content: space-between; align-items: center; }
+.admin-quicklinks { display: flex; flex-direction: column; gap: 7px; max-width: 260px; margin-bottom: 16px; }
+.admin-quicklinks a { display: flex; justify-content: space-between; align-items: center; padding: 12px 16px; background: #fffffc; border: 1px solid #e3dcc7; border-radius: 8px; color: #1f3d2b; font-size: 13px; font-weight: 500; letter-spacing: .2px; transition: background .15s, border-color .15s; }
+.admin-quicklinks a:hover { background: #f0efe3; border-color: #a2793e; color: #16281c; }
+.admin-quicklinks a span { color: #a2793e; font-weight: 600; }
 `;
 
 // ===== lib/router.js =====
@@ -1479,10 +1483,10 @@ const body = `
 <div class="hint" style="flex-basis:100%;">기간을 비워두면 전체 기간이 다운로드됩니다. 기준은 발주일(현재는 최종 선정일시로 대체)입니다.</div>
 </form>
 </div>
-<div class="section-actions" style="margin-bottom:14px;">
-<div><a href="/admin/vendors">업체 관리 →</a></div>
-<div><a href="/admin/categories">업체 카테고리 관리 →</a></div>
-<div><a href="/admin/sites">사업장 관리 →</a></div>
+<div class="admin-quicklinks">
+<a href="/admin/vendors">업체 관리<span>→</span></a>
+<a href="/admin/categories">업체 카테고리 관리<span>→</span></a>
+<a href="/admin/sites">사업장 관리<span>→</span></a>
 </div>
 ${requests.length === 0 ? '<div class="card">등록된 견적요청이 없습니다.</div>' : `<div class="card-grid">${cards}</div>`}
 `;
