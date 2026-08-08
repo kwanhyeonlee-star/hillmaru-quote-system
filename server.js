@@ -107,7 +107,15 @@ data: partBody,
 };
 }
 } else {
-fields[name] = partBody.toString('utf8');
+const val = partBody.toString('utf8');
+// 같은 name의 필드(체크박스 여러 개 선택, 여러 품목 행 등)가 반복되면 배열로 누적한다.
+// querystring.parse()가 중복 키를 배열로 돌려주는 것과 동일한 동작을 맞추기 위함.
+if (Object.prototype.hasOwnProperty.call(fields, name)) {
+if (Array.isArray(fields[name])) fields[name].push(val);
+else fields[name] = [fields[name], val];
+} else {
+fields[name] = val;
+}
 }
 }
 return { fields, files };
