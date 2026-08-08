@@ -1518,13 +1518,14 @@ ${siteOptions}
 <h3 style="margin-top:0;">품목 목록</h3>
 <div id="items-wrap">
 <div class="form-row item-row">
-<div><label>품목명</label><input type="text" name="item_name[]" required></div>
+<div><label>품목명</label><input type="text" name="item_name[]"></div>
 <div><label>규격</label><input type="text" name="item_spec[]"></div>
 <div><label>수량</label><input type="number" name="item_qty[]" value="1" min="1"></div>
 <div><label>단위</label><input type="text" name="item_unit[]" placeholder="예) 포, 톤, EA"></div>
 ${itemCategorySelects(cat1Options, cat2Options, cat3Options)}
 </div>
 </div>
+<p class="hint">품목명은 직접 입력하거나 엑셀 업로드만으로 등록해도 됩니다(둘 다 비워두면 품목 없이 견적요청만 생성됩니다).</p>
 <p class="hint">과목1/2/3은 나중에 구매Data를 다운로드해서 구매 실적 보고서를 만들 때 품목 분류로 쓰입니다. 목록에 없는 값이 필요하면 <a href="/admin/categories" target="_blank">카테고리 관리</a>에서 먼저 추가해주세요.</p>
 <button type="button" class="btn secondary small" onclick="addItemRow()">+ 품목 추가</button>
 <div style="margin-top:14px;">
