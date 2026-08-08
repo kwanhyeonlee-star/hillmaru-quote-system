@@ -209,6 +209,9 @@ button:hover, .btn:hover { background: #16281c; text-decoration: none; }
 .dashboard-col-menu { flex: 0 0 260px; }
 .dashboard-col-active, .dashboard-col-done { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 12px; }
 .dashboard-col-title { font-size: 14px; margin: 0 0 2px; color: #445238; letter-spacing: .2px; }
+.dashboard-manager-group { display: flex; flex-direction: column; gap: 12px; }
+.dashboard-manager-group + .dashboard-manager-group { margin-top: 6px; padding-top: 14px; border-top: 1px dashed #d8d2ba; }
+.dashboard-manager-title { font-size: 12px; font-weight: 600; color: #a2793e; letter-spacing: .3px; }
 @media (max-width: 860px) {
   .dashboard-layout { flex-direction: column; }
   .dashboard-col-menu { flex: none; width: 100%; }
@@ -1479,8 +1482,27 @@ ${progressBar(r.selectedCount, r.totalItems)}
 };
 const activeRequests = requests.filter((r) => !(r.totalItems > 0 && r.selectedCount === r.totalItems));
 const doneRequests = requests.filter((r) => r.totalItems > 0 && r.selectedCount === r.totalItems);
-const activeCards = activeRequests.map(cardFor).join('');
-const doneCards = doneRequests.map(cardFor).join('');
+
+// 담당자별로 묶어서 보여준다 (일단 이 두 사람 고정 순서: 유환익 차장 위, 이관현 과장 아래)
+const MANAGER_GROUPS = ['유환익 차장', '이관현 과장'];
+function managerGroupOf(r) {
+const name = (r.manager_name || '').trim();
+if (name.includes('유환익')) return '유환익 차장';
+return '이관현 과장';
+}
+function groupedByManager(list) {
+if (list.length === 0) return '';
+return MANAGER_GROUPS.map((mgr) => {
+const items = list.filter((r) => managerGroupOf(r) === mgr);
+if (items.length === 0) return '';
+return `<div class="dashboard-manager-group">
+<div class="dashboard-manager-title">${escapeHtml(mgr)}</div>
+${items.map(cardFor).join('')}
+</div>`;
+}).join('');
+}
+const activeCards = groupedByManager(activeRequests);
+const doneCards = groupedByManager(doneRequests);
 
 const body = `
 <div class="section-actions">
