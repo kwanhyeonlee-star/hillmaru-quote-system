@@ -915,6 +915,9 @@ const BUYERS = {
 '유환익 차장': { name: '유환익', dept: '기획감사팀', email: 'hiyoo@donghoon.com', phone: '010-3500-6370' },
 };
 
+// 대금지급 지급처(돈이 실제로 나가는 사업장) 고정 목록
+const PAYMENT_SOURCES = ['본사', '창녕', '포천'];
+
 const ITEM_ROW_START = 16;
 const ITEM_ROW_MAX = 36; // 템플릿에 준비된 품목 행 범위 (21행)
 
@@ -1895,12 +1898,18 @@ ${qr.status === 'completed' ? '<div class="flash success" style="margin-bottom:1
 <tbody>
 ${items.filter((it) => selections[it.id]).map((it) => {
 const s = selections[it.id];
+const recipientOpts = PAYMENT_SOURCES.map((p) => `<option value="${escapeHtml(p)}" ${s.paymentRecipient === p ? 'selected' : ''}>${escapeHtml(p)}</option>`).join('');
+const customRecipient = s.paymentRecipient && !PAYMENT_SOURCES.includes(s.paymentRecipient);
 return `<tr>
 <td>${escapeHtml(it.item_name)}<input type="hidden" name="fs_item_id[]" value="${it.id}"></td>
 <td>${escapeHtml(s.vendor_name)}</td>
 <td><input type="date" name="fs_received_date[]" value="${escapeHtml(s.receivedDate || '')}"></td>
 <td><input type="date" name="fs_payment_date[]" value="${escapeHtml(s.paymentDate || '')}"></td>
-<td><input type="text" name="fs_payment_recipient[]" value="${escapeHtml(s.paymentRecipient || '')}" placeholder="예) 계좌/업체명"></td>
+<td><select name="fs_payment_recipient[]">
+<option value="" ${!s.paymentRecipient ? 'selected' : ''}>선택 안 함</option>
+${recipientOpts}
+${customRecipient ? `<option value="${escapeHtml(s.paymentRecipient)}" selected>${escapeHtml(s.paymentRecipient)}(기존값)</option>` : ''}
+</select></td>
 </tr>`;
 }).join('')}
 </tbody>
