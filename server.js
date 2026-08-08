@@ -1840,14 +1840,18 @@ return `
 <form method="GET" action="/admin/quote-requests/${qr.id}/po/${vid}" style="display:flex;gap:10px;align-items:end;flex-wrap:wrap;">
 <div><label>구매담당</label><select name="buyer">${buyerOpts}</select></div>
 <div><label>발주일자</label><input type="date" name="orderDate" value="${today}"></div>
-<div><label>현장 입고 담당자</label>
+<div><label>입고 요청일자</label><input type="date" name="deliveryDate" value="${escapeHtml(qr.requested_delivery_date || today)}"></div>
+<div><label>현장 입고 담당자(저장된 목록)</label>
 <select name="onsiteContactId">
 <option value="">선택 안 함(기본값)</option>
 ${contactOpts}
 </select>
 </div>
+<div><label>담당자 직접입력</label><input type="text" name="onsiteContactName" placeholder="목록에 없으면 직접 입력"></div>
+<div><label>담당자 연락처</label><input type="text" name="onsiteContactPhone" placeholder="010-0000-0000"></div>
 <button type="submit" class="btn small">발주서 다운로드</button>
 </form>
+<p class="hint" style="margin-top:6px;">담당자를 직접 입력하면 저장된 목록 선택은 무시되고 직접입력 값이 사용됩니다.</p>
 </div>`;
 }).join('');
 })()}
@@ -2867,9 +2871,14 @@ if (poItems.length === 0) { res.writeHead(404); return res.end('이 업체로 �
 
 const buyerLabel = BUYERS[req.query.buyer] ? req.query.buyer : '이관현 과장';
 const orderDateStr = /^\d{4}-\d{2}-\d{2}$/.test(req.query.orderDate || '') ? req.query.orderDate : new Date().toISOString().slice(0, 10);
+const deliveryDateStr = /^\d{4}-\d{2}-\d{2}$/.test(req.query.deliveryDate || '') ? req.query.deliveryDate : (qr.requested_delivery_date || orderDateStr);
 
 let effectiveOnsiteContact = site.onsite_contact || '';
-if (req.query.onsiteContactId) {
+const manualContactName = (req.query.onsiteContactName || '').trim();
+if (manualContactName) {
+const manualContactPhone = (req.query.onsiteContactPhone || '').trim();
+effectiveOnsiteContact = manualContactPhone ? `${manualContactName} ${manualContactPhone}` : manualContactName;
+} else if (req.query.onsiteContactId) {
 const contact = await db.prepare('SELECT * FROM onsite_contacts WHERE id = ? AND site_id = ?').get(Number(req.query.onsiteContactId), site.id);
 if (contact) effectiveOnsiteContact = contact.phone ? `${contact.name} ${contact.phone}` : contact.name;
 }
@@ -2878,7 +2887,7 @@ let buf;
 try {
 buf = buildPurchaseOrder({
 templateBuffer: PO_TEMPLATE,
-site: { ...site, onsite_contact: effectiveOnsiteContact, deliveryDateStr: qr.requested_delivery_date },
+site: { ...site, onsite_contact: effectiveOnsiteContact, deliveryDateStr },
 vendor,
 buyerLabel,
 items: poItems,
