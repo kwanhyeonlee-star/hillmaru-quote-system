@@ -1909,7 +1909,7 @@ ${canSubmit ? `
 <form method="POST" action="/vendor/quote-requests/${qr.id}/submissions/import" enctype="multipart/form-data">
 <label>견적 엑셀(.xlsx)</label>
 <input type="file" name="submissions_excel" accept=".xlsx" required>
-<p class="hint">1행은 머릿글로 건너뜁니다. 대체품을 제안할 경우 구분 칸에 "대체품"이라고 적어주세요.</p>
+<p class="hint">1행은 머릿글로 건너뜁니다.<br><strong>대체품을 제안하려면</strong>: 새 행을 추가해 <b>품목명</b>은 원래 요청 품목명과 똑같이 두고, <b>구분</b> 칸에 "대체품"이라고 적은 뒤 <b>제안품목명</b>에 실제로 제안할 제품명을 입력하세요. 양식 맨 아래에 예시 행이 들어있습니다.</p>
 <button type="submit" class="btn secondary">일괄 제출</button>
 </form>
 </div>` : ''}
@@ -3026,9 +3026,14 @@ const assign = await db.prepare('SELECT * FROM vendor_assignments WHERE quote_re
 if (!assign) { res.writeHead(403); return res.end('접근 권한이 없습니다.'); }
 const items = await db.prepare('SELECT * FROM quote_items WHERE quote_request_id = ?').all(id);
 const rows = items.map((it) => [it.item_name, '요청품', it.item_name, it.spec || '', String(it.qty), it.unit || '', '', '', '', '']);
+const exampleFirstName = items[0] ? items[0].item_name : '비료';
+const exampleRow = [
+`(예시-실제로 반영되지 않는 샘플행. 참고 후 삭제하거나 그대로 두세요) ${exampleFirstName}`,
+'대체품', `${exampleFirstName} 대신 제안할 실제 제품명`, '규격 예시', '10', '포', '14000', '2026-09-01', '제조사명', '대체 제안 사유(선택)',
+];
 sendXlsxTemplate(res, '견적_일괄제출_양식.xlsx',
-['품목명', '구분', '제안품목명', '규격', '수량', '단위', '단가', '납기일자', '제조사', '비고'],
-rows.length ? rows : [['예) 비료', '요청품', '비료', '20kg', '10', '포', '15000', '2026-09-01', '한국비료', '']]
+['품목명', '구분(요청품/대체품)', '제안품목명', '규격', '수량', '단위', '단가', '납기일자', '제조사', '비고/제안사유'],
+rows.length ? [...rows, exampleRow] : [['예) 비료', '요청품', '비료', '20kg', '10', '포', '15000', '2026-09-01', '한국비료', ''], exampleRow]
 );
 });
 
