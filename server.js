@@ -1383,8 +1383,8 @@ return options.map((o) => `<option value="${escapeHtml(o)}" ${o === selected ? '
 }
 
 // 실제 힐마루 포천/창녕 공식 홈페이지의 코스 사진을 로그인 화면에 사용한다(같은 회사 소유 이미지).
-// 포천은 클럽하우스 진입로 사진(직접 제공받은 파일)을 저장소에 넣어 자체 호스팅한다.
-const LOGIN_PHOTO_POCHEON = '/static/login_pocheon.jpg';
+// 포천 클럽하우스 진입로 사진은 포천 공식 홈페이지(클럽안내 > 클럽소개)에 있는 원본을 그대로 사용한다.
+const LOGIN_PHOTO_POCHEON = 'https://cdn.pocheon.hillmaru.com/images/club-images/pc/wo3.jpg';
 const LOGIN_PHOTO_CHANGNYEONG = 'https://www.hillmaru.com/_Data/_PopUp/%EB%A9%94%EC%9D%B8_visual_1.jpg';
 
 function loginPage({ role = 'admin', error } = {}) {
@@ -2312,19 +2312,6 @@ const router = new Router();
 router.get('/static/style.css', (req, res) => {
 res.writeHead(200, { 'Content-Type': 'text/css; charset=utf-8' });
 res.end(STYLE_CSS);
-});
-
-const LOGIN_PHOTO_POCHEON_PATH = path.join(__dirname, 'login_pocheon.jpg');
-let LOGIN_PHOTO_POCHEON_BUF = null;
-try {
-LOGIN_PHOTO_POCHEON_BUF = fs.readFileSync(LOGIN_PHOTO_POCHEON_PATH);
-} catch (e) {
-console.warn('[경고] 로그인 화면 포천 클럽하우스 사진(login_pocheon.jpg)을 찾을 수 없습니다.');
-}
-router.get('/static/login_pocheon.jpg', (req, res) => {
-if (!LOGIN_PHOTO_POCHEON_BUF) { res.writeHead(404); return res.end(); }
-res.writeHead(200, { 'Content-Type': 'image/jpeg', 'Cache-Control': 'public, max-age=604800' });
-res.end(LOGIN_PHOTO_POCHEON_BUF);
 });
 
 // ---------- 공통 헬퍼 ----------
