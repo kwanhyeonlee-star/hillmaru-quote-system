@@ -742,6 +742,24 @@ function xlsxRowIsEmpty(row) {
 return !row || row.every((v) => !v || !String(v).trim());
 }
 
+// 엑셀 날짜 셀은 서식 없이 읽으면 순수 숫자(일련번호, 예: 46255)로 나온다.
+// 이미 "2026-09-01"처럼 문자열로 적힌 값은 그대로 두고, 순수 숫자(그럴듯한 날짜 범위)만 날짜로 변환한다.
+function excelSerialToDateStr(v) {
+if (v === null || v === undefined) return '';
+const s = String(v).trim();
+if (!s) return '';
+if (!/^\d+(\.\d+)?$/.test(s)) return s;
+const num = Number(s);
+if (!Number.isFinite(num) || num < 1 || num > 60000) return s;
+const ms = Date.UTC(1899, 11, 30) + Math.round(num) * 86400000;
+const d = new Date(ms);
+if (Number.isNaN(d.getTime())) return s;
+const yyyy = d.getUTCFullYear();
+const mm = String(d.getUTCMonth() + 1).padStart(2, '0');
+const dd = String(d.getUTCDate()).padStart(2, '0');
+return `${yyyy}-${mm}-${dd}`;
+}
+
 // ---- 엑셀 "쓰기" (업로드용 빈 양식 다운로드) ----
 // 0-based 열 인덱스 -> 엑셀 열 문자 (0->A, 25->Z, 26->AA ...)
 function xlsxColLetter(idx) {
@@ -762,14 +780,25 @@ return `<c r="${ref}" t="inlineStr"><is><t xml:space="preserve">${safe}</t></is>
 }
 
 // headers: 문자열 배열(1행), exampleRows: 문자열 배열의 배열(2행부터, 작성 예시) -> 최소한의 유효한 .xlsx Buffer
-function buildTemplateXlsx(headers, exampleRows) {
+// dataValidations(선택): [{ col: 0-based 열 인덱스, list: ['값1','값2'], firstRow, lastRow }] -> 해당 열에 드롭다운(목록) 유효성검사 추가
+function buildTemplateXlsx(headers, exampleRows, dataValidations) {
 exampleRows = exampleRows || [];
 const rowsXml = [`<row r="1">${headers.map((h, i) => xlsxCellInline(`${xlsxColLetter(i)}1`, h)).join('')}</row>`];
 exampleRows.forEach((row, rIdx) => {
 const rn = rIdx + 2;
 rowsXml.push(`<row r="${rn}">${row.map((v, i) => xlsxCellInline(`${xlsxColLetter(i)}${rn}`, v)).join('')}</row>`);
 });
-const sheetXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData>${rowsXml.join('')}</sheetData></worksheet>`;
+let dvXml = '';
+if (dataValidations && dataValidations.length) {
+const items = dataValidations.map((dv) => {
+const col = xlsxColLetter(dv.col);
+const sqref = `${col}${dv.firstRow}:${col}${dv.lastRow}`;
+const formula = dv.list.join(',').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+return `<dataValidation type="list" allowBlank="1" showInputMessage="1" showErrorMessage="1" sqref="${sqref}"><formula1>"${formula}"</formula1></dataValidation>`;
+}).join('');
+dvXml = `<dataValidations count="${dataValidations.length}">${items}</dataValidations>`;
+}
+const sheetXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData>${rowsXml.join('')}</sheetData>${dvXml}</worksheet>`;
 const contentTypes = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/></Types>`;
 const rootRels = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>`;
 const workbookXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="Sheet1" sheetId="1" r:id="rId1"/></sheets></workbook>`;
@@ -783,8 +812,8 @@ entries.set('xl/worksheets/sheet1.xml', Buffer.from(sheetXml, 'utf8'));
 return writeZip(entries);
 }
 
-function sendXlsxTemplate(res, filename, headers, exampleRows) {
-const buf = buildTemplateXlsx(headers, exampleRows);
+function sendXlsxTemplate(res, filename, headers, exampleRows, dataValidations) {
+const buf = buildTemplateXlsx(headers, exampleRows, dataValidations);
 res.writeHead(200, {
 'Content-Type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
 'Content-Disposition': `attachment; filename*=UTF-8''${encodeURIComponent(filename)}`,
@@ -1849,36 +1878,64 @@ const itemBlocks = items.map((it) => {
 const mine = mySubmissions.filter((s) => s.quote_item_id === it.id);
 const requestedMine = mine.filter((s) => s.type === 'requested');
 const subsMine = mine.filter((s) => s.type === 'substitute');
-const subRows = subsMine.map((s) => `
-<tr><td><span class="badge substitute">대체품</span></td><td>${escapeHtml(s.product_name)}</td><td>${escapeHtml(s.spec)}</td><td>${s.qty}${escapeHtml(s.unit)}</td><td>${money(s.unit_price)}</td><td>${escapeHtml(s.delivery_date || '-')}</td><td>${escapeHtml(s.substitute_reason)}</td></tr>
-`).join('');
+const req0 = requestedMine[0] || null;
+
+const subBlocks = subsMine.map((s) => `
+<div class="card" style="background:#fdf7ec;margin-bottom:8px;">
+<div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;">
+<div style="font-size:14px;"><span class="badge substitute">대체품</span> ${escapeHtml(s.product_name)} · ${escapeHtml(s.spec || '')} · ${s.qty}${escapeHtml(s.unit || '')} · ${money(s.unit_price)} · 납기 ${escapeHtml(s.delivery_date || '-')}</div>
+${canSubmit ? `<form method="POST" action="/vendor/quote-requests/${qr.id}/submissions/${s.id}/delete" class="inline" onsubmit="return confirm('이 대체품 제안을 삭제할까요?');"><button type="submit" class="btn small danger">삭제</button></form>` : ''}
+</div>
+${s.substitute_reason ? `<p class="hint" style="margin:6px 0 0;">제안 사유: ${escapeHtml(s.substitute_reason)}</p>` : ''}
+${canSubmit ? `
+<details style="margin-top:8px;">
+<summary style="cursor:pointer;color:#2563eb;font-size:13px;">▸ 수정하기</summary>
+<form method="POST" action="/vendor/quote-requests/${qr.id}/submissions" style="margin-top:8px;">
+<input type="hidden" name="quote_item_id" value="${it.id}">
+<input type="hidden" name="type" value="substitute">
+<input type="hidden" name="submission_id" value="${s.id}">
+<div class="form-row">
+<div><label>대체품명</label><input type="text" name="product_name" value="${escapeHtml(s.product_name)}" required></div>
+<div><label>규격</label><input type="text" name="spec" value="${escapeHtml(s.spec || '')}"></div>
+<div><label>수량</label><input type="number" name="qty" value="${s.qty}" min="1" required></div>
+<div><label>단위</label><input type="text" name="unit" value="${escapeHtml(s.unit || '')}"></div>
+</div>
+<div class="form-row">
+<div><label>단가(원)</label><input type="number" name="unit_price" min="0" required value="${s.unit_price}"></div>
+<div><label>납기일자</label><input type="date" name="delivery_date" value="${escapeHtml(s.delivery_date || '')}"></div>
+<div><label>제조사</label><input type="text" name="manufacturer" value="${escapeHtml(s.manufacturer || '')}"></div>
+</div>
+<label>제안 사유</label><textarea name="substitute_reason" rows="2">${escapeHtml(s.substitute_reason || '')}</textarea>
+<div style="margin-top:10px;"><button type="submit">대체품 수정 저장</button></div>
+</form>
+</details>` : ''}
+</div>`).join('');
 
 return `
 <div class="card">
 <h3 style="margin-top:0;">${escapeHtml(it.item_name)} <span class="hint">(${escapeHtml(it.spec || '')} · 요청수량 ${it.qty}${escapeHtml(it.unit || '')})</span></h3>
-${requestedMine.length > 0 ? `
-<p class="hint">제출한 요청품 견적: ${escapeHtml(requestedMine[0].product_name)} / ${money(requestedMine[0].unit_price)} / 납기 ${escapeHtml(requestedMine[0].delivery_date || '-')}</p>
-` : (canSubmit ? `
+${canSubmit ? `
 <form method="POST" action="/vendor/quote-requests/${qr.id}/submissions">
 <input type="hidden" name="quote_item_id" value="${it.id}">
 <input type="hidden" name="type" value="requested">
+${req0 ? `<input type="hidden" name="submission_id" value="${req0.id}">` : ''}
 <div class="form-row">
-<div><label>제안 품목명</label><input type="text" name="product_name" value="${escapeHtml(it.item_name)}" required></div>
-<div><label>규격</label><input type="text" name="spec" value="${escapeHtml(it.spec || '')}"></div>
-<div><label>수량</label><input type="number" name="qty" value="${it.qty}" min="1" required></div>
-<div><label>단위</label><input type="text" name="unit" value="${escapeHtml(it.unit || '')}"></div>
+<div><label>제안 품목명</label><input type="text" name="product_name" value="${escapeHtml(req0 ? req0.product_name : it.item_name)}" required></div>
+<div><label>규격</label><input type="text" name="spec" value="${escapeHtml(req0 ? (req0.spec || '') : (it.spec || ''))}"></div>
+<div><label>수량</label><input type="number" name="qty" value="${req0 ? req0.qty : it.qty}" min="1" required></div>
+<div><label>단위</label><input type="text" name="unit" value="${escapeHtml(req0 ? (req0.unit || '') : (it.unit || ''))}"></div>
 </div>
 <div class="form-row">
-<div><label>단가(원)</label><input type="number" name="unit_price" min="0" required></div>
-<div><label>납기일자</label><input type="date" name="delivery_date"></div>
-<div><label>제조사</label><input type="text" name="manufacturer"></div>
+<div><label>단가(원)</label><input type="number" name="unit_price" min="0" required value="${req0 ? req0.unit_price : ''}"></div>
+<div><label>납기일자</label><input type="date" name="delivery_date" value="${escapeHtml(req0 ? (req0.delivery_date || '') : '')}"></div>
+<div><label>제조사</label><input type="text" name="manufacturer" value="${escapeHtml(req0 ? (req0.manufacturer || '') : '')}"></div>
 </div>
-<label>비고</label><textarea name="note" rows="2"></textarea>
-<div style="margin-top:10px;"><button type="submit">요청품 견적 제출</button></div>
-</form>` : '<p class="hint">열람 권한만 있어 견적을 제출할 수 없습니다.</p>')}
+<label>비고</label><textarea name="note" rows="2">${escapeHtml(req0 ? (req0.note || '') : '')}</textarea>
+<div style="margin-top:10px;"><button type="submit">${req0 ? '요청품 견적 수정' : '요청품 견적 제출'}</button></div>
+</form>` : (req0 ? `<p class="hint">제출한 요청품 견적: ${escapeHtml(req0.product_name)} / ${money(req0.unit_price)} / 납기 ${escapeHtml(req0.delivery_date || '-')}</p>` : '<p class="hint">열람 권한만 있어 견적을 제출할 수 없습니다.</p>')}
 ${subsMine.length > 0 ? `
 <h4 style="margin-bottom:4px;">제출한 대체품</h4>
-<table><thead><tr><th>구분</th><th>제안 품목</th><th>규격</th><th>수량</th><th>단가</th><th>납기</th><th>제안 사유</th></tr></thead><tbody>${subRows}</tbody></table>
+${subBlocks}
 ` : ''}
 ${canSubmit ? `
 <details style="margin-top:12px;">
@@ -2989,8 +3046,9 @@ SELECT s.* FROM submissions s
 JOIN quote_items qi ON qi.id = s.quote_item_id
 WHERE qi.quote_request_id = ? AND s.vendor_id = ?
 `).all(id, u.userId);
+const flash = req.query.err === 'selected' ? { type: 'error', message: '이미 관리자가 최종 선정한 제안이라 삭제할 수 없습니다. 수정은 가능합니다.' } : null;
 res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
-res.end(views.vendorQuoteRequestPage({ user: u, qr, items, permission: assign.permission, mySubmissions }));
+res.end(views.vendorQuoteRequestPage({ user: u, qr, items, permission: assign.permission, mySubmissions, flash }));
 });
 
 router.post('/vendor/quote-requests/:id/submissions', async (req, res) => {
@@ -3005,24 +3063,58 @@ const itemId = Number(body.quote_item_id);
 const item = await db.prepare('SELECT * FROM quote_items WHERE id = ? AND quote_request_id = ?').get(itemId, id);
 if (!item) { res.writeHead(404); return res.end('품목을 찾을 수 없습니다.'); }
 const type = body.type === 'substitute' ? 'substitute' : 'requested';
+const submissionId = body.submission_id ? Number(body.submission_id) : null;
 
-if (type === 'requested') {
-const existing = await db.prepare("SELECT id FROM submissions WHERE quote_item_id=? AND vendor_id=? AND type='requested'").get(itemId, u.userId);
-if (existing) return redirect(res, `/vendor/quote-requests/${id}`);
+let existing = null;
+if (submissionId) {
+existing = await db.prepare('SELECT * FROM submissions WHERE id = ? AND quote_item_id = ? AND vendor_id = ?').get(submissionId, itemId, u.userId);
+} else if (type === 'requested') {
+existing = await db.prepare("SELECT * FROM submissions WHERE quote_item_id=? AND vendor_id=? AND type='requested'").get(itemId, u.userId);
 }
 
+const vals = [
+body.product_name || '', body.spec || '', Number(body.qty) || 1, body.unit || '',
+Number(body.unit_price) || 0, body.delivery_date || null, body.manufacturer || '',
+type === 'substitute' ? (body.substitute_reason || '') : '', type === 'requested' ? (body.note || '') : '',
+new Date().toISOString(),
+];
+
+if (existing) {
+await db.prepare(`
+UPDATE submissions SET product_name=?, spec=?, qty=?, unit=?, unit_price=?, delivery_date=?, manufacturer=?, substitute_reason=?, note=?, submitted_at=?
+WHERE id = ?
+`).run(...vals, existing.id);
+} else {
 await db.prepare(`
 INSERT INTO submissions (quote_item_id, vendor_id, type, product_name, spec, qty, unit, unit_price, delivery_date, manufacturer, substitute_reason, note, submitted_at)
 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-`).run(
-itemId, u.userId, type,
-body.product_name || '', body.spec || '', Number(body.qty) || 1, body.unit || '',
-Number(body.unit_price) || 0, body.delivery_date || null, body.manufacturer || '',
-body.substitute_reason || '', body.note || '', new Date().toISOString()
-);
+`).run(itemId, u.userId, type, ...vals);
+}
 
 notifyManagerOfSubmission(req, id, u).catch(() => {});
 
+redirect(res, `/vendor/quote-requests/${id}`);
+});
+
+// 업체가 자신이 제출한 대체품 제안을 삭제. 이미 관리자가 최종 선정한 건은 삭제를 막는다(선정 결과가 사라지는 것을 방지).
+router.post('/vendor/quote-requests/:id/submissions/:subId/delete', async (req, res) => {
+const u = requireLogin('vendor')(req, res);
+if (!u) return;
+const id = Number(req.params.id);
+const subId = Number(req.params.subId);
+const assign = await db.prepare('SELECT * FROM vendor_assignments WHERE quote_request_id = ? AND vendor_id = ?').get(id, u.userId);
+if (!assign || assign.permission !== 'submit') { res.writeHead(403); return res.end('견적입력 권한이 없습니다.'); }
+
+const sub = await db.prepare(`
+SELECT s.* FROM submissions s JOIN quote_items qi ON qi.id = s.quote_item_id
+WHERE s.id = ? AND qi.quote_request_id = ? AND s.vendor_id = ?
+`).get(subId, id, u.userId);
+if (!sub) { res.writeHead(404); return res.end('제출 내역을 찾을 수 없습니다.'); }
+
+const picked = await db.prepare('SELECT quote_item_id FROM final_selections WHERE submission_id = ?').get(subId);
+if (picked) return redirect(res, `/vendor/quote-requests/${id}?err=selected`);
+
+await db.prepare('DELETE FROM submissions WHERE id = ?').run(subId);
 redirect(res, `/vendor/quote-requests/${id}`);
 });
 
@@ -3039,9 +3131,11 @@ const exampleRow = [
 `(예시-실제로 반영되지 않는 샘플행. 참고 후 삭제하거나 그대로 두세요) ${exampleFirstName}`,
 '대체품', `${exampleFirstName} 대신 제안할 실제 제품명`, '규격 예시', '10', '포', '14000', '2026-09-01', '제조사명', '대체 제안 사유(선택)',
 ];
+const finalRows = rows.length ? [...rows, exampleRow] : [['예) 비료', '요청품', '비료', '20kg', '10', '포', '15000', '2026-09-01', '한국비료', ''], exampleRow];
 sendXlsxTemplate(res, '견적_일괄제출_양식.xlsx',
 ['품목명', '구분(요청품/대체품)', '제안품목명', '규격', '수량', '단위', '단가', '납기일자', '제조사', '비고/제안사유'],
-rows.length ? [...rows, exampleRow] : [['예) 비료', '요청품', '비료', '20kg', '10', '포', '15000', '2026-09-01', '한국비료', ''], exampleRow]
+finalRows,
+[{ col: 1, list: ['요청품', '대체품'], firstRow: 2, lastRow: finalRows.length + 1 }]
 );
 });
 
@@ -3071,29 +3165,46 @@ const insertSub = db.prepare(`
 INSERT INTO submissions (quote_item_id, vendor_id, type, product_name, spec, qty, unit, unit_price, delivery_date, manufacturer, substitute_reason, note, submitted_at)
 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 `);
-let created = 0, skipped = 0;
+const updateSub = db.prepare(`
+UPDATE submissions SET product_name=?, spec=?, qty=?, unit=?, unit_price=?, delivery_date=?, manufacturer=?, substitute_reason=?, note=?, submitted_at=?
+WHERE id = ?
+`);
+let created = 0, updated = 0, skipped = 0;
 for (let i = 1; i < rows.length; i++) {
 const r = rows[i];
 if (xlsxRowIsEmpty(r)) continue;
-const [itemNameRaw, typeRaw, productName, spec, qty, unit, unitPrice, deliveryDate, manufacturer, note] = r;
+const [itemNameRaw, typeRaw, productNameRaw, spec, qty, unit, unitPrice, deliveryDateRaw, manufacturer, note] = r;
 const item = itemByName.get(String(itemNameRaw || '').trim().toLowerCase());
 if (!item) { skipped++; continue; }
 const type = String(typeRaw || '').includes('대체') ? 'substitute' : 'requested';
+const productName = productNameRaw || item.item_name;
+const deliveryDate = excelSerialToDateStr(deliveryDateRaw) || null;
+
+// 같은 업체가 같은 품목에 같은 구분으로 이미 제출한 건이 있으면(요청품은 품목당 1건, 대체품은 제안품목명 기준) 새로 만들지 않고 수정한다.
+let existing;
 if (type === 'requested') {
-const existing = await db.prepare("SELECT id FROM submissions WHERE quote_item_id=? AND vendor_id=? AND type='requested'").get(item.id, u.userId);
-if (existing) { skipped++; continue; }
+existing = await db.prepare("SELECT id FROM submissions WHERE quote_item_id=? AND vendor_id=? AND type='requested'").get(item.id, u.userId);
+} else {
+existing = await db.prepare("SELECT id FROM submissions WHERE quote_item_id=? AND vendor_id=? AND type='substitute' AND LOWER(TRIM(product_name))=LOWER(TRIM(?))").get(item.id, u.userId, productName);
 }
-await insertSub.run(
-item.id, u.userId, type,
-productName || item.item_name, spec || '', Number(qty) || 1, unit || '',
-Number(unitPrice) || 0, deliveryDate || null, manufacturer || '',
+
+const vals = [
+productName, spec || '', Number(qty) || 1, unit || '',
+Number(unitPrice) || 0, deliveryDate, manufacturer || '',
 type === 'substitute' ? (note || '') : '', type === 'requested' ? (note || '') : '',
-new Date().toISOString()
-);
+new Date().toISOString(),
+];
+
+if (existing) {
+await updateSub.run(...vals, existing.id);
+updated++;
+} else {
+await insertSub.run(item.id, u.userId, type, ...vals);
 created++;
 }
-console.log(`[엑셀] 견적 일괄 제출: 생성 ${created}건, 스킵 ${skipped}건`);
-if (created > 0) notifyManagerOfSubmission(req, id, u).catch(() => {});
+}
+console.log(`[엑셀] 견적 일괄 제출: 생성 ${created}건, 수정 ${updated}건, 스킵 ${skipped}건`);
+if (created > 0 || updated > 0) notifyManagerOfSubmission(req, id, u).catch(() => {});
 redirect(res, `/vendor/quote-requests/${id}`);
 });
 
