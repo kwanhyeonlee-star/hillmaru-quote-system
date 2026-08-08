@@ -102,9 +102,13 @@ h3 { font-size: 15px; margin: 18px 0 8px; color: #33422f; font-weight: 600; }
 .qr-progress-bar { height: 5px; background: #e6e0cd; border-radius: 999px; overflow: hidden; margin: 8px 0; }
 .qr-progress-fill { height: 100%; background: #a2793e; }
 
-table { width: 100%; border-collapse: collapse; font-size: 14px; }
+table { width: 100%; border-collapse: collapse; font-size: 14px; word-break: keep-all; overflow-wrap: break-word; }
 th, td { padding: 10px 12px; border-bottom: 1px solid #ece6d5; text-align: left; vertical-align: top; }
-th { background: #f0efe3; font-weight: 500; color: #445238; letter-spacing: .2px; }
+th { background: #f0efe3; font-weight: 500; color: #445238; letter-spacing: .2px; white-space: nowrap; }
+.table-scroll { overflow-x: auto; margin-bottom: 4px; }
+.table-scroll table.table-wide { width: auto; min-width: 100%; }
+.table-wide td, .table-wide th { white-space: nowrap; }
+.table-wide td.wrap { white-space: normal; min-width: 130px; }
 tr.row-substitute { background: #fbf6e9; }
 tr.row-lowest { outline: 1px solid #a2793e; outline-offset: -1px; }
 tr.row-selected { background: #edf2e5; }
@@ -1514,10 +1518,12 @@ const body = `
 <a class="btn secondary" href="/admin/vendors/export">↓ 전체 업체 다운로드(.xlsx)</a>
 </div>
 <div class="card">
-<table>
+<div class="table-scroll">
+<table class="table-wide">
 <thead><tr><th>업체명</th><th>카테고리</th><th>담당자</th><th>이메일</th><th>로그인ID</th><th>상태</th><th>사업자등록증</th><th>통장사본</th><th></th></tr></thead>
 <tbody>${rows || '<tr><td colspan="9">등록된 업체가 없습니다.</td></tr>'}</tbody>
 </table>
+</div>
 </div>
 <h2>엑셀로 업체 일괄 등록</h2>
 <div class="card">
@@ -1956,15 +1962,15 @@ const total = s.unit_price * s.qty;
 return `
 <tr class="${s.type === 'substitute' ? 'row-substitute' : ''} ${isLowest ? 'row-lowest' : ''} ${isSelected ? 'row-selected' : ''}">
 <td>${typeBadge}${isLowest ? '<span class="badge lowest">최저가</span>' : ''}${isSelected ? '<span class="badge selected">선정됨</span>' : ''}</td>
-<td>${escapeHtml(s.vendor_name)}</td>
-<td>${escapeHtml(s.product_name)}</td>
-<td>${escapeHtml(s.spec)}</td>
+<td class="wrap">${escapeHtml(s.vendor_name)}</td>
+<td class="wrap">${escapeHtml(s.product_name)}</td>
+<td class="wrap">${escapeHtml(s.spec)}</td>
 <td>${s.qty}${escapeHtml(s.unit)}</td>
 <td>${money(s.unit_price)}</td>
 <td>${money(total)}</td>
 <td>${escapeHtml(s.delivery_date || '-')}</td>
-<td>${escapeHtml(s.manufacturer || '-')}</td>
-<td>${s.substitute_reason ? escapeHtml(s.substitute_reason) : '-'}</td>
+<td class="wrap">${escapeHtml(s.manufacturer || '-')}</td>
+<td class="wrap">${s.substitute_reason ? escapeHtml(s.substitute_reason) : '-'}</td>
 <td>
 ${isSelected ? '<span class="hint">현재 선정됨</span>' : (isLowest ? `
 <form method="POST" action="/admin/quote-requests/select" class="inline">
@@ -2009,10 +2015,12 @@ return `
 ${sel ? '<span class="badge selected">선정 완료</span>' : '<span class="hint">미선정</span>'}
 </div>
 ${subs.length === 0 ? '<p class="hint">아직 제출된 견적이 없습니다.</p>' : `
-<table>
+<div class="table-scroll">
+<table class="table-wide">
 <thead><tr><th>구분</th><th>업체</th><th>제안 품목</th><th>규격</th><th>수량</th><th>단가</th><th>총액</th><th>납기일자</th><th>제조사</th><th>대체 사유</th><th></th></tr></thead>
 <tbody>${rows}</tbody>
-</table>`}
+</table>
+</div>`}
 </div>`;
 }).join('');
 
@@ -2047,26 +2055,28 @@ ${itemsBlocks}
 ${selectedCount > 0 ? `
 <h2>품목별 최종 선정 결과</h2>
 <div class="card">
-<table>
+<div class="table-scroll">
+<table class="table-wide">
 <thead><tr><th>기준 품목</th><th>선정 구분</th><th>선정 품목</th><th>선정 업체</th><th>수량</th><th>단가</th><th>품목 총금액</th><th>납기일자</th><th>선정 사유</th></tr></thead>
 <tbody>
 ${items.filter((it) => selections[it.id]).map((it) => {
 const s = selections[it.id];
 const reasonLabel = s.isLowestPick ? '최저가' : (s.selectionReason || '-');
 return `<tr>
-<td>${escapeHtml(it.item_name)}</td>
+<td class="wrap">${escapeHtml(it.item_name)}</td>
 <td><span class="badge ${s.type}">${s.type === 'requested' ? '요청품' : '대체품'}</span></td>
-<td>${escapeHtml(s.product_name)}</td>
-<td>${escapeHtml(s.vendor_name)}</td>
+<td class="wrap">${escapeHtml(s.product_name)}</td>
+<td class="wrap">${escapeHtml(s.vendor_name)}</td>
 <td>${s.qty}${escapeHtml(s.unit)}</td>
 <td>${money(s.unit_price)}</td>
 <td>${money(s.unit_price * s.qty)}</td>
 <td>${escapeHtml(s.delivery_date || '-')}</td>
-<td>${s.isLowestPick ? `<span class="badge lowest" style="margin-left:0;">${escapeHtml(reasonLabel)}</span>` : escapeHtml(reasonLabel)}</td>
+<td class="wrap">${s.isLowestPick ? `<span class="badge lowest" style="margin-left:0;">${escapeHtml(reasonLabel)}</span>` : escapeHtml(reasonLabel)}</td>
 </tr>`;
 }).join('')}
 </tbody>
 </table>
+</div>
 <div class="total-box">
 <div class="label">${selectedCount === totalItems ? '완전 총금액' : '현재 선정금액'}</div>
 <div class="value">${money(selectedAmount)}</div>
