@@ -9,7 +9,172 @@ const { createClient } = require('@libsql/client');
 const zlib = require('zlib');
 
 // ===== embedded CSS =====
-const STYLE_CSS = "* { box-sizing: border-box; }\nbody {\n margin: 0;\n font-family: 'Noto Sans KR', -apple-system, \"Apple SD Gothic Neo\", \"Malgun Gothic\", \"Segoe UI\", sans-serif;\n background: #f6f2e9;\n color: #2e2a22;\n line-height: 1.6;\n}\na { color: #8a6d3b; text-decoration: none; }\na:hover { text-decoration: underline; }\n\n.topbar {\n background: #24281f;\n color: #f3ead9;\n border-bottom: 3px solid #8a6d3b;\n}\n.topbar-inner {\n max-width: 1100px;\n margin: 0 auto;\n padding: 16px 20px;\n display: flex;\n justify-content: space-between;\n align-items: center;\n}\n.brand { color: #e9dcb8; font-weight: 700; font-size: 19px; letter-spacing: 1px; }\n.topbar nav a { color: #cfc6ad; margin-left: 16px; font-size: 13px; letter-spacing: .3px; }\n.topbar nav a:hover { color: #f3ead9; }\n.who { color: #9c9280; font-size: 14px; }\n\n.container {\n max-width: 1100px;\n margin: 0 auto;\n padding: 32px 20px 60px;\n}\n\n.footer {\n text-align: center;\n color: #9c9280;\n font-size: 13px;\n padding: 22px;\n border-top: 1px solid #e7ddc9;\n margin-top: 20px;\n}\n\nh1 { font-size: 23px; margin: 0 0 20px; color: #23281f; font-weight: 700; letter-spacing: .2px; }\nh2 { font-size: 18px; margin: 30px 0 14px; color: #3a3324; }\nh3 { font-size: 15px; margin: 18px 0 8px; color: #3a3324; }\n\n.flash { padding: 10px 14px; border-radius: 8px; margin-bottom: 18px; font-size: 14px; }\n.flash.info { background: #eef1e6; color: #4b5230; }\n.flash.error { background: #fbe9e3; color: #93412a; }\n.flash.success { background: #eaf1e2; color: #3e5b28; }\n\n.card {\n background: #fffdf8;\n border: 1px solid #e7ddc9;\n border-radius: 10px;\n padding: 22px;\n margin-bottom: 18px;\n box-shadow: 0 1px 2px rgba(60,50,20,0.04);\n}\n\n.card-grid {\n display: grid;\n grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));\n gap: 16px;\n}\n\n.qr-card { display: block; color: inherit; }\n.qr-card:hover { text-decoration: none; border-color: #c9ad72; }\n.qr-title { font-weight: 700; font-size: 15px; margin-bottom: 6px; color: #23281f; }\n.qr-status { display: inline-block; font-size: 12px; padding: 2px 8px; border-radius: 999px; margin-bottom: 10px; }\n.qr-status.selecting { background: #f6ecd6; color: #8a5a1e; }\n.qr-status.completed { background: #e7f0dc; color: #3e5b28; }\n.qr-status.open { background: #eee7f4; color: #5b4a86; }\n.qr-meta { font-size: 13px; color: #7a7360; margin: 2px 0; }\n.qr-total { margin-top: 10px; font-size: 15px; font-weight: 700; color: #23281f; }\n.qr-progress-bar { height: 6px; background: #ece3d1; border-radius: 999px; overflow: hidden; margin: 8px 0; }\n.qr-progress-fill { height: 100%; background: #8a6d3b; }\n\ntable { width: 100%; border-collapse: collapse; font-size: 14px; }\nth, td { padding: 9px 10px; border-bottom: 1px solid #ece3d1; text-align: left; vertical-align: top; }\nth { background: #f7f2e6; font-weight: 600; color: #4b4636; }\ntr.row-substitute { background: #fdf7ec; }\ntr.row-lowest { outline: 2px solid #8a6d3b; outline-offset: -2px; }\ntr.row-selected { background: #eef4e6; }\n.badge { display: inline-block; font-size: 11px; padding: 1px 7px; border-radius: 999px; font-weight: 600; }\n.badge.requested { background: #eee7f4; color: #5b4a86; }\n.badge.substitute { background: #f6ecd6; color: #8a5a1e; }\n.badge.lowest { background: #8a6d3b; color: #fff; margin-left: 6px; }\n.badge.selected { background: #4b7a34; color: #fff; }\n\nform.inline { display: inline; }\nlabel { display: block; font-size: 13px; color: #5a5442; margin: 10px 0 4px; }\ninput[type=text], input[type=email], input[type=number], input[type=date], input[type=password], select, textarea {\n width: 100%;\n padding: 9px 10px;\n border: 1px solid #d9cdac;\n border-radius: 6px;\n font-size: 14px;\n font-family: inherit;\n background: #fffefb;\n}\ntextarea { resize: vertical; }\n.form-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px,1fr)); gap: 12px; }\nfieldset { border: 1px solid #e7ddc9; border-radius: 8px; margin: 14px 0; padding: 14px; }\nlegend { font-weight: 700; font-size: 13px; padding: 0 6px; color: #4b4636; }\n\nbutton, .btn {\n display: inline-block;\n background: #8a6d3b;\n color: #fff;\n border: none;\n padding: 9px 15px;\n border-radius: 6px;\n font-size: 14px;\n cursor: pointer;\n text-decoration: none;\n}\nbutton:hover, .btn:hover { background: #715a2f; text-decoration: none; }\n.btn.secondary { background: #5c6b4f; }\n.btn.secondary:hover { background: #47543d; }\n.btn.small { padding: 4px 10px; font-size: 12px; }\n.btn.danger { background: #a4432c; }\n.btn.danger:hover { background: #863623; }\n.btn.ghost { background: transparent; border: 1px solid #d9cdac; color: #4b4636; }\n.btn.ghost:hover { background: #f3ecdd; }\n\n.category-block { border: 1px solid #e7ddc9; border-radius: 8px; padding: 12px 14px; margin-bottom: 12px; background: #fbf7ef; }\n.category-title { font-weight: 700; margin-bottom: 8px; color: #3a3324; }\n.vendor-row { display: flex; align-items: center; gap: 10px; padding: 4px 0; font-size: 14px; }\n.vendor-row .vname { flex: 1; }\n.bulk-btns { margin-bottom: 8px; }\n.bulk-btns button { margin-right: 6px; }\n\n.login-wrap { max-width: 380px; margin: 60px auto; }\n.login-tabs { display: flex; gap: 8px; margin-bottom: 16px; }\n.login-tabs a { flex: 1; text-align: center; padding: 10px; border-radius: 8px; background: #ece3d1; color: #4b4636; font-weight: 600; }\n.login-tabs a.active { background: #8a6d3b; color: #fff; }\n\n.total-box { background: #24281f; color: #f3ead9; padding: 16px 20px; border-radius: 10px; margin-top: 16px; }\n.total-box .label { font-size: 13px; color: #cfc6ad; }\n.total-box .value { font-size: 24px; font-weight: 800; }\n\n.hint { font-size: 12px; color: #9c9280; }\n.section-actions { display: flex; justify-content: space-between; align-items: center; }\n";
+// 디자인 방향: 포레스트 그린 & 아이보리 — 골프클럽/리조트 프리미엄 톤 (동훈그룹 힐마루)
+const STYLE_CSS = `
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  font-family: 'Noto Sans KR', -apple-system, "Apple SD Gothic Neo", "Malgun Gothic", "Segoe UI", sans-serif;
+  background: #f5f2e8;
+  color: #23281f;
+  line-height: 1.65;
+  -webkit-font-smoothing: antialiased;
+}
+a { color: #1f3d2b; text-decoration: none; }
+a:hover { color: #a2793e; }
+
+.topbar {
+  background: #16281c;
+  color: #f2efe3;
+  border-bottom: 1px solid #0e1a12;
+}
+.topbar-inner {
+  max-width: 1120px;
+  margin: 0 auto;
+  padding: 20px 24px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+.brand {
+  color: #f2efe3;
+  font-family: 'Noto Serif KR', serif;
+  font-weight: 600;
+  font-size: 20px;
+  letter-spacing: 1.5px;
+  padding-bottom: 2px;
+  border-bottom: 2px solid #a2793e;
+}
+.brand-tagline { color: #8fa190; font-size: 10px; letter-spacing: 2px; margin-top: 4px; text-transform: uppercase; }
+.topbar nav { display: flex; align-items: center; }
+.topbar nav a { color: #cbd4c9; margin-left: 18px; font-size: 13px; letter-spacing: .3px; }
+.topbar nav a:hover { color: #f2efe3; }
+.who { color: #8fa190; font-size: 13px; }
+
+.container {
+  max-width: 1120px;
+  margin: 0 auto;
+  padding: 40px 24px 64px;
+}
+
+.footer {
+  text-align: center;
+  color: #9c9280;
+  font-size: 11px;
+  letter-spacing: 1px;
+  padding: 26px;
+  border-top: 1px solid #e3dcc7;
+  margin-top: 28px;
+}
+
+h1 { font-family: 'Noto Serif KR', serif; font-size: 24px; margin: 0 0 22px; color: #16281c; font-weight: 600; letter-spacing: .2px; }
+h2 { font-size: 17px; margin: 34px 0 14px; color: #1f3d2b; font-weight: 600; letter-spacing: .2px; }
+h3 { font-size: 15px; margin: 18px 0 8px; color: #33422f; font-weight: 600; }
+
+.flash { padding: 11px 15px; border-radius: 6px; margin-bottom: 18px; font-size: 14px; border: 1px solid transparent; }
+.flash.info { background: #eef1e6; color: #445238; border-color: #dde5d2; }
+.flash.error { background: #fbeae5; color: #8a3d28; border-color: #f1d3c8; }
+.flash.success { background: #e8f0e0; color: #2f4d24; border-color: #d3e2c3; }
+
+.card {
+  background: #fffffc;
+  border: 1px solid #e3dcc7;
+  border-radius: 10px;
+  padding: 24px;
+  margin-bottom: 18px;
+}
+
+.card-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 16px;
+}
+
+.qr-card { display: block; color: inherit; }
+.qr-card:hover { border-color: #a2793e; }
+.qr-title { font-weight: 600; font-size: 15px; margin-bottom: 8px; color: #16281c; }
+.qr-status { display: inline-block; font-size: 11px; padding: 2px 9px; border-radius: 3px; margin-bottom: 10px; letter-spacing: .3px; font-weight: 500; }
+.qr-status.selecting { background: #f6ecd7; color: #8a5a1e; }
+.qr-status.completed { background: #e2ecd8; color: #2f4d24; }
+.qr-status.open { background: #eae7f0; color: #5b4a86; }
+.qr-meta { font-size: 13px; color: #6f6a5a; margin: 2px 0; }
+.qr-total { margin-top: 10px; font-size: 15px; font-weight: 600; color: #16281c; }
+.qr-progress-bar { height: 5px; background: #e6e0cd; border-radius: 999px; overflow: hidden; margin: 8px 0; }
+.qr-progress-fill { height: 100%; background: #a2793e; }
+
+table { width: 100%; border-collapse: collapse; font-size: 14px; }
+th, td { padding: 10px 12px; border-bottom: 1px solid #ece6d5; text-align: left; vertical-align: top; }
+th { background: #f0efe3; font-weight: 500; color: #445238; letter-spacing: .2px; }
+tr.row-substitute { background: #fbf6e9; }
+tr.row-lowest { outline: 1px solid #a2793e; outline-offset: -1px; }
+tr.row-selected { background: #edf2e5; }
+.badge { display: inline-block; font-size: 11px; padding: 2px 8px; border-radius: 3px; font-weight: 500; letter-spacing: .2px; }
+.badge.requested { background: #eae7f0; color: #5b4a86; }
+.badge.substitute { background: #f6ecd7; color: #8a5a1e; }
+.badge.lowest { background: #a2793e; color: #fff; margin-left: 6px; }
+.badge.selected { background: #1f3d2b; color: #fff; }
+
+form.inline { display: inline; }
+label { display: block; font-size: 12px; color: #5f6a56; margin: 12px 0 5px; letter-spacing: .2px; }
+input[type=text], input[type=email], input[type=number], input[type=date], input[type=password], select, textarea {
+  width: 100%;
+  padding: 9px 11px;
+  border: 1px solid #d8d2ba;
+  border-radius: 4px;
+  font-size: 14px;
+  font-family: inherit;
+  background: #fffffc;
+  color: #23281f;
+}
+input:focus, select:focus, textarea:focus { outline: none; border-color: #1f3d2b; }
+textarea { resize: vertical; }
+.form-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px,1fr)); gap: 12px; }
+fieldset { border: 1px solid #e3dcc7; border-radius: 8px; margin: 14px 0; padding: 14px; }
+legend { font-weight: 600; font-size: 13px; padding: 0 6px; color: #445238; }
+
+button, .btn {
+  display: inline-block;
+  background: #1f3d2b;
+  color: #f2efe3;
+  border: none;
+  padding: 9px 16px;
+  border-radius: 4px;
+  font-size: 13px;
+  letter-spacing: .3px;
+  cursor: pointer;
+  text-decoration: none;
+}
+button:hover, .btn:hover { background: #16281c; text-decoration: none; }
+.btn.secondary { background: #a2793e; color: #211a0f; }
+.btn.secondary:hover { background: #8a6634; }
+.btn.small { padding: 5px 11px; font-size: 12px; }
+.btn.danger { background: #8a3d28; color: #fff; }
+.btn.danger:hover { background: #712f1e; }
+.btn.ghost { background: transparent; border: 1px solid #d8d2ba; color: #445238; }
+.btn.ghost:hover { background: #f0efe3; }
+
+.category-block { border: 1px solid #e3dcc7; border-radius: 8px; padding: 14px 16px; margin-bottom: 12px; background: #fbf9f0; }
+.category-title { font-weight: 600; margin-bottom: 8px; color: #33422f; }
+.vendor-row { display: flex; align-items: center; gap: 10px; padding: 5px 0; font-size: 14px; }
+.vendor-row .vname { flex: 1; }
+.bulk-btns { margin-bottom: 8px; }
+.bulk-btns button { margin-right: 6px; }
+
+.login-wrap { max-width: 380px; margin: 72px auto; }
+.login-hero { text-align: center; margin-bottom: 28px; }
+.login-hero .mark { font-family: 'Noto Serif KR', serif; font-weight: 600; font-size: 30px; color: #16281c; letter-spacing: 2px; }
+.login-hero .tagline { font-size: 11px; color: #8a8266; letter-spacing: 2px; text-transform: uppercase; margin-top: 6px; }
+.login-tabs { display: flex; gap: 20px; margin-bottom: 4px; border-bottom: 1px solid #e3dcc7; }
+.login-tabs a { padding: 10px 2px; color: #8a8266; font-weight: 500; font-size: 13px; letter-spacing: .3px; border-bottom: 2px solid transparent; margin-bottom: -1px; }
+.login-tabs a.active { color: #16281c; border-bottom-color: #a2793e; }
+
+.total-box { background: #16281c; color: #f2efe3; padding: 18px 22px; border-radius: 8px; margin-top: 16px; }
+.total-box .label { font-size: 12px; color: #a9b8a3; letter-spacing: .3px; }
+.total-box .value { font-size: 24px; font-weight: 600; font-family: 'Noto Serif KR', serif; }
+
+.hint { font-size: 12px; color: #8a8266; }
+.section-actions { display: flex; justify-content: space-between; align-items: center; }
+`;
 
 // ===== lib/router.js =====
 // 아주 가벼운 라우터 (외부 패키지 없이 순수 Node.js로 구현)
@@ -1161,13 +1326,16 @@ return `<!DOCTYPE html>
 <title>${escapeHtml(title)} · 힐마루 견적관리</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;500;600;700;800&family=Noto+Serif+KR:wght@500;600;700&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
 <header class="topbar">
 <div class="topbar-inner">
-<a class="brand" href="${user ? (user.role === 'admin' ? '/admin' : '/vendor') : '/'}">힐마루 견적관리</a>
+<div>
+<a class="brand" href="${user ? (user.role === 'admin' ? '/admin' : '/vendor') : '/'}">힐마루</a>
+<div class="brand-tagline">동훈그룹 · 견적관리시스템</div>
+</div>
 <nav>
 ${user ? `
 <span class="who">${escapeHtml(user.displayName)}${user.role === 'admin' ? ' (관리자)' : ' (업체)'}</span>
@@ -1194,12 +1362,15 @@ return options.map((o) => `<option value="${escapeHtml(o)}" ${o === selected ? '
 function loginPage({ role = 'admin', error } = {}) {
 const body = `
 <div class="login-wrap">
-<h1>로그인</h1>
+<div class="login-hero">
+<div class="mark">힐마루</div>
+<div class="tagline">동훈그룹 · 견적관리시스템</div>
+</div>
 <div class="login-tabs">
 <a href="/login?role=admin" class="${role === 'admin' ? 'active' : ''}">관리자</a>
 <a href="/login?role=vendor" class="${role === 'vendor' ? 'active' : ''}">업체</a>
 </div>
-<div class="card">
+<div class="card" style="border-top:none;border-top-left-radius:0;border-top-right-radius:0;">
 ${error ? `<div class="flash error">${escapeHtml(error)}</div>` : ''}
 <form method="POST" action="/login">
 <input type="hidden" name="role" value="${role}">
@@ -1207,7 +1378,7 @@ ${error ? `<div class="flash error">${escapeHtml(error)}</div>` : ''}
 <input type="text" name="login_id" required autofocus>
 <label>비밀번호</label>
 <input type="password" name="password" required>
-<div style="margin-top:16px;"><button type="submit">로그인</button></div>
+<div style="margin-top:18px;"><button type="submit" style="width:100%;padding:11px;">로그인</button></div>
 </form>
 </div>
 </div>`;
