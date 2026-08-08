@@ -1174,10 +1174,15 @@ ${progressBar(r.selectedCount, r.totalItems)}
 const body = `
 <div class="section-actions">
 <h1>관리자 대시보드</h1>
-<div>
-<a class="btn secondary" href="/admin/quote-requests/export-results" style="margin-right:8px;">↓ 구매Data 다운로드(.xlsx)</a>
 <a class="btn" href="/admin/quote-requests/new">+ 새 견적요청</a>
 </div>
+<div class="card" style="margin-bottom:14px;">
+<form method="GET" action="/admin/quote-requests/export-results" style="display:flex;gap:10px;align-items:end;flex-wrap:wrap;">
+<div><label>발주일(선정일) 시작</label><input type="date" name="from"></div>
+<div><label>발주일(선정일) 종료</label><input type="date" name="to"></div>
+<div><button type="submit" class="btn secondary">↓ 구매Data 다운로드(.xlsx)</button></div>
+<div class="hint" style="flex-basis:100%;">기간을 비워두면 전체 기간이 다운로드됩니다. 기준은 발주일(현재는 최종 선정일시로 대체)입니다.</div>
+</form>
 </div>
 <div class="section-actions" style="margin-bottom:14px;">
 <div><a href="/admin/vendors">업체 관리 →</a></div>
@@ -2138,6 +2143,15 @@ return { submissions, minPrice, candidates, selected };
 router.get('/admin/quote-requests/export-results', async (req, res) => {
 const u = requireLogin('admin')(req, res);
 if (!u) return;
+// 기간 필터 기준: 발주일(현재는 최종선정일시 fs.selected_at을 발주일 대용으로 씀).
+// 필요하면 나중에 실제 발주일 필드가 생기는 시점에 이 기준 컬럼만 바꾸면 된다.
+const fromDate = /^\d{4}-\d{2}-\d{2}$/.test(req.query.from || '') ? req.query.from : '';
+const toDate = /^\d{4}-\d{2}-\d{2}$/.test(req.query.to || '') ? req.query.to : '';
+const dateConditions = [];
+const dateArgs = [];
+if (fromDate) { dateConditions.push("date(fs.selected_at) >= date(?)"); dateArgs.push(fromDate); }
+if (toDate) { dateConditions.push("date(fs.selected_at) <= date(?)"); dateArgs.push(toDate); }
+const whereClause = dateConditions.length ? `WHERE ${dateConditions.join(' AND ')}` : '';
 const rows = await db.prepare(`
 SELECT
 qr.title AS request_title,
@@ -2170,8 +2184,9 @@ JOIN vendors v ON v.id = sub.vendor_id
 JOIN quote_items qi ON qi.id = fs.quote_item_id
 JOIN quote_requests qr ON qr.id = qi.quote_request_id
 LEFT JOIN sites st ON st.id = qr.site_id
+${whereClause}
 ORDER BY qr.id DESC, qi.id
-`).all();
+`).all(...dateArgs);
 // 구매 실적 보고서 스킬(hillmaru-purchase-performance-report)이 읽는 원본 구매데이터 양식과
 // 최대한 동일하게 맞춘 24개 컬럼. 헤더는 3행(header=2)에 오도록 1~2행은 비워둔다.
 // 견적 시스템에 없는 항목(담당자/요청부서/과목1~3/품의번호/대금지급 관련/지급처)은 빈 칸으로 둔다 —
@@ -2189,7 +2204,8 @@ r.product_name, r.sub_spec || '', r.sub_qty, r.unit_price, r.total_price, r.sub_
 '', '', '', r.selection_reason || r.substitute_reason || '',
 ];
 });
-sendXlsxTemplate(res, `구매Data_${new Date().toISOString().slice(0, 10)}.xlsx`, ['구매Data'], [[], PURCHASE_DATA_COLS, ...dataRows]);
+const rangeLabel = (fromDate || toDate) ? `${fromDate || '처음'}~${toDate || '오늘'}` : `전체_${new Date().toISOString().slice(0, 10)}`;
+sendXlsxTemplate(res, `구매Data_${rangeLabel}.xlsx`, ['구매Data'], [[], PURCHASE_DATA_COLS, ...dataRows]);
 });
 
 router.get('/admin', async (req, res) => {
