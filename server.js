@@ -205,6 +205,14 @@ button:hover, .btn:hover { background: #16281c; text-decoration: none; }
 .admin-quicklinks a { display: flex; justify-content: space-between; align-items: center; padding: 12px 16px; background: #fffffc; border: 1px solid #e3dcc7; border-radius: 8px; color: #1f3d2b; font-size: 13px; font-weight: 500; letter-spacing: .2px; transition: background .15s, border-color .15s; }
 .admin-quicklinks a:hover { background: #f0efe3; border-color: #a2793e; color: #16281c; }
 .admin-quicklinks a span { color: #a2793e; font-weight: 600; }
+.dashboard-layout { display: flex; gap: 20px; align-items: flex-start; }
+.dashboard-col-menu { flex: 0 0 260px; }
+.dashboard-col-active, .dashboard-col-done { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 12px; }
+.dashboard-col-title { font-size: 14px; margin: 0 0 2px; color: #445238; letter-spacing: .2px; }
+@media (max-width: 860px) {
+  .dashboard-layout { flex-direction: column; }
+  .dashboard-col-menu { flex: none; width: 100%; }
+}
 `;
 
 // ===== lib/router.js =====
@@ -1456,7 +1464,7 @@ const pct = total > 0 ? Math.round((selected / total) * 100) : 0;
 return `<div class="qr-progress-bar"><div class="qr-progress-fill" style="width:${pct}%"></div></div>`;
 }
 function adminDashboard({ user, requests, flash }) {
-const cards = requests.map((r) => {
+const cardFor = (r) => {
 const statusLabel = r.selectedCount === 0 ? '접수중' : (r.selectedCount === r.totalItems ? '선정 완료' : `선정 ${r.selectedCount}/${r.totalItems}`);
 const statusClass = r.selectedCount === 0 ? 'open' : (r.selectedCount === r.totalItems ? 'completed' : 'selecting');
 return `
@@ -1468,7 +1476,11 @@ return `
 ${progressBar(r.selectedCount, r.totalItems)}
 <div class="qr-total">${r.selectedCount === r.totalItems && r.totalItems > 0 ? '최종 총금액' : '현재 선정금액'}<br>${money(r.selectedAmount)}</div>
 </a>`;
-}).join('');
+};
+const activeRequests = requests.filter((r) => !(r.totalItems > 0 && r.selectedCount === r.totalItems));
+const doneRequests = requests.filter((r) => r.totalItems > 0 && r.selectedCount === r.totalItems);
+const activeCards = activeRequests.map(cardFor).join('');
+const doneCards = doneRequests.map(cardFor).join('');
 
 const body = `
 <div class="section-actions">
@@ -1483,12 +1495,23 @@ const body = `
 <div class="hint" style="flex-basis:100%;">기간을 비워두면 전체 기간이 다운로드됩니다. 기준은 발주일(현재는 최종 선정일시로 대체)입니다.</div>
 </form>
 </div>
+<div class="dashboard-layout">
+<div class="dashboard-col dashboard-col-menu">
 <div class="admin-quicklinks">
 <a href="/admin/vendors">업체 관리<span>→</span></a>
 <a href="/admin/categories">업체 카테고리 관리<span>→</span></a>
 <a href="/admin/sites">사업장 관리<span>→</span></a>
 </div>
-${requests.length === 0 ? '<div class="card">등록된 견적요청이 없습니다.</div>' : `<div class="card-grid">${cards}</div>`}
+</div>
+<div class="dashboard-col dashboard-col-active">
+<h2 class="dashboard-col-title">진행중인 견적요청</h2>
+${activeRequests.length === 0 ? '<div class="card hint">진행중인 견적요청이 없습니다.</div>' : activeCards}
+</div>
+<div class="dashboard-col dashboard-col-done">
+<h2 class="dashboard-col-title">완료된 견적요청</h2>
+${doneRequests.length === 0 ? '<div class="card hint">완료된 견적요청이 없습니다.</div>' : doneCards}
+</div>
+</div>
 `;
 return layout({ title: '관리자 대시보드', body, user, flash });
 }
