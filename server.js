@@ -762,6 +762,16 @@ if (vendorCols.includes('category') && vendorCols.includes('category1')) {
 await db.execute("UPDATE vendors SET category1 = category WHERE (category1 IS NULL OR category1 = '') AND category IS NOT NULL AND category <> ''");
 }
 
+// manual_purchase_records에 업로드 배치 추적 컬럼이 없던 예전 DB 대응.
+// 같은 엑셀을 두 번 올려도 중복 저장되지 않게 판별하고, 잘못 올린 배치를 한 번에 삭제할 수 있게 하기 위함.
+const mprCols = (await db.prepare("PRAGMA table_info(manual_purchase_records)").all()).map((c) => c.name);
+if (!mprCols.includes('import_batch')) {
+await db.execute("ALTER TABLE manual_purchase_records ADD COLUMN import_batch TEXT DEFAULT ''");
+}
+if (!mprCols.includes('import_file_name')) {
+await db.execute("ALTER TABLE manual_purchase_records ADD COLUMN import_file_name TEXT DEFAULT ''");
+}
+
 // 기본 관리자 계정 시딩 (없을 때만)
 const adminCount = (await db.prepare('SELECT COUNT(*) AS c FROM admins').get()).c;
 if (adminCount === 0) {
@@ -1112,48 +1122,47 @@ res.end(buf);
 // 시트가 여러 개인 .xlsx Buffer 생성 (연도별 시트로 나눠 담는 구매실적보고서 원본데이터용).
 // sheets: [{ name: '2026', rows: [[...행1...], [...행2...], ...] }] — rows[0]이 실제 1행이 된다.
 function buildMultiSheetXlsx(sheets) {
-  const entries = new Map();
-  const contentTypesParts = [
-    '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>',
-    '<Default Extension="xml" ContentType="application/xml"/>',
-    '<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>',
-    ];
-  const workbookSheetsXml = [];
-  const workbookRelsParts = [];
-  sheets.forEach((sheet, idx) => {
-    const sheetNum = idx + 1;
-    const rowsXml = sheet.rows.map((row, rIdx) => {
-      const rn = rIdx + 1;
-      return `<row r="${rn}">${row.map((v, i) => xlsxCellInline(`${xlsxColLetter(i)}${rn}`, v)).join('')}</row>`;
-    }).join('');
-    const sheetXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData>${rowsXml}</sheetData></worksheet>`;
-    entries.set(`xl/worksheets/sheet${sheetNum}.xml`, Buffer.from(sheetXml, 'utf8'));
-    contentTypesParts.push(`<Override PartName="/xl/worksheets/sheet${sheetNum}.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>`);
-    // 엑셀 시트명은 31자 제한 및 일부 특수문자 금지 — 안전하게 다듬는다.
-    const safeName = xmlEscape(String(sheet.name || `Sheet${sheetNum}`).replace(/[\\/?*[\]:]/g, ' ').slice(0, 31)) || `Sheet${sheetNum}`;
-    workbookSheetsXml.push(`<sheet name="${safeName}" sheetId="${sheetNum}" r:id="rId${sheetNum}"/>`);
-    workbookRelsParts.push(`<Relationship Id="rId${sheetNum}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet${sheetNum}.xml"/>`);
-  });
-  const contentTypes = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">${contentTypesParts.join('')}</Types>`;
-  const rootRels = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>`;
-  const workbookXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets>${workbookSheetsXml.join('')}</sheets></workbook>`;
-  const workbookRels = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">${workbookRelsParts.join('')}</Relationships>`;
-  entries.set('[Content_Types].xml', Buffer.from(contentTypes, 'utf8'));
-  entries.set('_rels/.rels', Buffer.from(rootRels, 'utf8'));
-  entries.set('xl/workbook.xml', Buffer.from(workbookXml, 'utf8'));
-  entries.set('xl/_rels/workbook.xml.rels', Buffer.from(workbookRels, 'utf8'));
-  return writeZip(entries);
+const entries = new Map();
+const contentTypesParts = [
+'<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>',
+'<Default Extension="xml" ContentType="application/xml"/>',
+'<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>',
+];
+const workbookSheetsXml = [];
+const workbookRelsParts = [];
+sheets.forEach((sheet, idx) => {
+const sheetNum = idx + 1;
+const rowsXml = sheet.rows.map((row, rIdx) => {
+const rn = rIdx + 1;
+return `<row r="${rn}">${row.map((v, i) => xlsxCellInline(`${xlsxColLetter(i)}${rn}`, v)).join('')}</row>`;
+}).join('');
+const sheetXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData>${rowsXml}</sheetData></worksheet>`;
+entries.set(`xl/worksheets/sheet${sheetNum}.xml`, Buffer.from(sheetXml, 'utf8'));
+contentTypesParts.push(`<Override PartName="/xl/worksheets/sheet${sheetNum}.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>`);
+// 엑셀 시트명은 31자 제한 및 일부 특수문자 금지 — 안전하게 다듬는다.
+const safeName = xmlEscape(String(sheet.name || `Sheet${sheetNum}`).replace(/[\\/?*[\]:]/g, ' ').slice(0, 31)) || `Sheet${sheetNum}`;
+workbookSheetsXml.push(`<sheet name="${safeName}" sheetId="${sheetNum}" r:id="rId${sheetNum}"/>`);
+workbookRelsParts.push(`<Relationship Id="rId${sheetNum}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet${sheetNum}.xml"/>`);
+});
+const contentTypes = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">${contentTypesParts.join('')}</Types>`;
+const rootRels = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>`;
+const workbookXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets>${workbookSheetsXml.join('')}</sheets></workbook>`;
+const workbookRels = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">${workbookRelsParts.join('')}</Relationships>`;
+entries.set('[Content_Types].xml', Buffer.from(contentTypes, 'utf8'));
+entries.set('_rels/.rels', Buffer.from(rootRels, 'utf8'));
+entries.set('xl/workbook.xml', Buffer.from(workbookXml, 'utf8'));
+entries.set('xl/_rels/workbook.xml.rels', Buffer.from(workbookRels, 'utf8'));
+return writeZip(entries);
 }
 
 function sendMultiSheetXlsx(res, filename, sheets) {
-  const buf = buildMultiSheetXlsx(sheets);
-  res.writeHead(200, {
-    'Content-Type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-    'Content-Disposition': `attachment; filename*=UTF-8''${encodeURIComponent(filename)}`,
-  });
-  res.end(buf);
+const buf = buildMultiSheetXlsx(sheets);
+res.writeHead(200, {
+'Content-Type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+'Content-Disposition': `attachment; filename*=UTF-8''${encodeURIComponent(filename)}`,
+});
+res.end(buf);
 }
-
 
 // ===== lib/po.js =====
 // 외부 패키지 없이 업로드된 발주서 템플릿(xlsx)의 특정 셀만 값을 바꿔 넣는 유틸
@@ -2009,6 +2018,32 @@ const rows = records.map((m) => `
 </td>
 </tr>`).join('');
 
+// 업로드 배치(엑셀 1회 업로드)별로 묶어서, 배치 전체를 한 번에 지울 수 있는 표를 만든다.
+// import_batch가 비어있는 행은 이 기능이 생기기 전에 등록된 이전 데이터라 별도로 묶는다.
+const batchMap = new Map();
+records.forEach((m) => {
+const key = m.import_batch || '';
+if (!batchMap.has(key)) batchMap.set(key, { fileName: m.import_file_name || '', count: 0 });
+batchMap.get(key).count += 1;
+});
+const batchRows = Array.from(batchMap.entries())
+.sort((a, b) => (b[0] || '').localeCompare(a[0] || ''))
+.map(([batch, info]) => {
+const label = batch ? batch.split('_')[0].replace('T', ' ').replace(/\.\d+Z?$/, '') : '(배치 정보 없음 · 이전 데이터)';
+return `
+<tr>
+<td class="wrap">${escapeHtml(label)}</td>
+<td class="wrap">${escapeHtml(info.fileName || '-')}</td>
+<td>${info.count}건</td>
+<td>
+<form method="POST" action="/admin/purchase-data/batch/delete" class="inline" onsubmit="return confirm('이 업로드 배치의 구매건 ${info.count}건을 모두 삭제할까요? 되돌릴 수 없습니다.');">
+<input type="hidden" name="batch" value="${escapeHtml(batch)}">
+<button type="submit" class="btn small danger">배치 전체 삭제</button>
+</form>
+</td>
+</tr>`;
+}).join('');
+
 const body = `
 <div class="section-actions">
 <h1>구매Data</h1>
@@ -2029,13 +2064,12 @@ const body = `
 <div><label>사업장</label><select name="site"><option value="포천">포천</option><option value="창녕">창녕</option></select></div>
 <div><label>발주일(선정일) 시작</label><input type="date" name="from"></div>
 <div><label>발주일(선정일) 종료</label><input type="date" name="to"></div>
-<div><label>기준 연도(선택)</label><input type="text" name="period" placeholder="예) 2026" pattern="\d{4}" style="width:90px;"></div>
+<div><label>기준 연도(선택)</label><input type="text" name="period" placeholder="예) 2026" pattern="\\d{4}" style="width:90px;"></div>
 <div><button type="submit" class="btn">↓ 구매 실적 보고서 다운로드(.pptx)</button></div>
 <div><button type="submit" formaction="/admin/purchase-data/report-export" class="btn secondary small">↓ 원본데이터 다운로드(.xlsx)</button></div>
 <div class="hint" style="flex-basis:100%;">기준 연도를 비워두면 데이터상 가장 최근 연도를 기준으로 만듭니다. 기간을 비워두면 전체 기간의 데이터로 만듭니다. "원본데이터"는 PPTX 대신 스킬용 원본 엑셀만 필요할 때 쓰는 보조 다운로드입니다.</div>
 </form>
 </div>
-
 <h2>견적시스템 미사용 구매건 수동입력</h2>
 <p class="hint" style="margin-top:-8px;margin-bottom:16px;">견적관리 시스템을 거치지 않고 진행된 구매건을 여기에 엑셀로 등록해두면, 위 "구매Data 다운로드"에 견적 기반 데이터와 함께 합산되어 나갑니다.</p>
 <div class="card bulk-btns">
@@ -2045,6 +2079,17 @@ const body = `
 <button type="submit" class="btn small">엑셀로 일괄 등록</button>
 </form>
 </div>
+${batchMap.size > 0 ? `
+<div class="card" style="margin-bottom:14px;">
+<h3 style="margin:0 0 8px;">업로드 배치 관리</h3>
+<p class="hint" style="margin-top:0;margin-bottom:12px;">엑셀 업로드 1회가 배치 1개입니다. 잘못 올렸거나 중복 등록됐다면 한 건씩 지우지 말고 여기서 해당 배치를 통째로 삭제한 뒤 다시 올리세요.</p>
+<div class="table-scroll">
+<table class="table-wide">
+<thead><tr><th>업로드 시각</th><th>파일명</th><th>건수</th><th></th></tr></thead>
+<tbody>${batchRows}</tbody>
+</table>
+</div>
+</div>` : ''}
 <div class="card">
 ${records.length === 0 ? '<p class="hint">수동으로 등록된 구매건이 없습니다.</p>' : `
 <div class="table-scroll">
@@ -2857,6 +2902,132 @@ paymentRecipient: selectedRow.payment_recipient || '',
 return { submissions, minPrice, candidates, selected };
 }
 
+// 기간(from~to)으로 필터링한 구매Data 행을 만든다 — 견적시스템에서 선정 완료된 건 + 관리자가 수동으로
+// 등록한 건을 합쳐서 PURCHASE_DATA_COLS 순서의 2차원 배열로 반환한다. 다운로드용(단일 시트)과
+// 구매실적보고서 원본데이터용(연도별 시트)이 이 함수를 공유해서 쓴다.
+async function getCombinedPurchaseDataRows({ fromDate, toDate }) {
+const dateConditions = [];
+const dateArgs = [];
+if (fromDate) { dateConditions.push("date(fs.selected_at) >= date(?)"); dateArgs.push(fromDate); }
+if (toDate) { dateConditions.push("date(fs.selected_at) <= date(?)"); dateArgs.push(toDate); }
+const whereClause = dateConditions.length ? `WHERE ${dateConditions.join(' AND ')}` : '';
+const rows = await db.prepare(`
+SELECT
+qr.title AS request_title,
+qr.draft_no AS draft_no,
+qr.draft_title AS draft_title,
+st.name AS site_name,
+qr.submission_deadline AS submission_deadline,
+qr.requested_delivery_date AS requested_delivery_date,
+qi.item_name AS req_item_name,
+qi.spec AS req_spec,
+qi.qty AS req_qty,
+qi.unit AS req_unit,
+qi.category1 AS category1,
+qi.category2 AS category2,
+qi.category3 AS category3,
+v.name AS vendor_name,
+sub.product_name AS product_name,
+sub.spec AS sub_spec,
+sub.qty AS sub_qty,
+sub.unit AS sub_unit,
+sub.unit_price AS unit_price,
+(sub.unit_price * sub.qty) AS total_price,
+sub.manufacturer AS manufacturer,
+sub.delivery_date AS delivery_date,
+sub.type AS sub_type,
+sub.substitute_reason AS substitute_reason,
+fs.reason AS selection_reason,
+fs.selected_at AS selected_at,
+fs.received_date AS received_date,
+fs.payment_date AS payment_date,
+fs.payment_recipient AS payment_recipient
+FROM final_selections fs
+JOIN submissions sub ON sub.id = fs.submission_id
+JOIN vendors v ON v.id = sub.vendor_id
+JOIN quote_items qi ON qi.id = fs.quote_item_id
+JOIN quote_requests qr ON qr.id = qi.quote_request_id
+LEFT JOIN sites st ON st.id = qr.site_id
+${whereClause}
+ORDER BY qr.id DESC, qi.id
+`).all(...dateArgs);
+// 품의번호/제목은 견적요청 완료 처리 화면에서 입력한 기안번호/기안제목을 사용한다(없으면 제목은 견적요청 제목으로 대체).
+// 입고일은 완료 처리에서 입력한 실제 입고일자를 우선 사용하고, 아직 완료 처리 전이면 업체가 제출한 납기일자로 대체한다.
+// 대금지급일/지급처도 완료 처리에서 입력한 값을 사용한다. 완료 처리 전이면 계속 빈 칸일 수 있다.
+// 견적 시스템에 아직 없는 항목(담당자/요청부서/대금지급)은 빈 칸으로 둔다.
+const dataRows = rows.map((r) => {
+const orderDate = (r.selected_at || '').slice(0, 10);
+const year = (r.selected_at || '').slice(0, 4);
+const siteBare = (r.site_name || '').replace(/^힐마루\s*/, '');
+return [
+'', year, siteBare, '', r.category1 || '', r.category2 || '', r.category3 || '', r.draft_no || '', r.draft_title || r.request_title, r.vendor_name,
+orderDate, r.received_date || r.delivery_date || '', r.sub_type === 'substitute' ? '대체품' : '요청품',
+r.product_name, r.sub_spec || '', r.sub_qty, r.unit_price, r.total_price, r.sub_qty, r.sub_unit || '',
+r.payment_date || '', '', r.payment_recipient || '', r.selection_reason || r.substitute_reason || '',
+];
+});
+
+// 견적 시스템을 거치지 않고 관리자가 엑셀로 수동 등록한 구매건도 같은 기간 필터로 합산한다.
+const manualConditions = [];
+const manualArgs = [];
+if (fromDate) { manualConditions.push("order_date <> '' AND date(order_date) >= date(?)"); manualArgs.push(fromDate); }
+if (toDate) { manualConditions.push("order_date <> '' AND date(order_date) <= date(?)"); manualArgs.push(toDate); }
+const manualWhere = manualConditions.length ? `WHERE ${manualConditions.join(' AND ')}` : '';
+const manualRecords = await db.prepare(`SELECT * FROM manual_purchase_records ${manualWhere} ORDER BY id DESC`).all(...manualArgs);
+const manualDataRows = manualRecords.map((m) => [
+m.manager, m.year, m.site, m.dept, m.category1, m.category2, m.category3, m.draft_no, m.title, m.vendor_name,
+m.order_date, m.received_date, m.item_type, m.item_name, m.spec, m.order_qty, m.unit_price, m.supply_price,
+m.received_qty, m.pack_unit, m.payment_date, m.payment_amount, m.payment_recipient, m.note,
+]);
+
+return [...dataRows, ...manualDataRows];
+}
+
+// ---- 전체 견적요청의 선정 결과(품목·업체·단가 등)를 한 엑셀로 통합 다운로드 ----
+router.get('/admin/quote-requests/export-results', async (req, res) => {
+const u = requireLogin('admin')(req, res);
+if (!u) return;
+// 기간 필터 기준: 발주일(현재는 최종선정일시 fs.selected_at을 발주일 대용으로 씀).
+// 필요하면 나중에 실제 발주일 필드가 생기는 시점에 이 기준 컬럼만 바꾸면 된다.
+const fromDate = /^\d{4}-\d{2}-\d{2}$/.test(req.query.from || '') ? req.query.from : '';
+const toDate = /^\d{4}-\d{2}-\d{2}$/.test(req.query.to || '') ? req.query.to : '';
+const combinedRows = await getCombinedPurchaseDataRows({ fromDate, toDate });
+const rangeLabel = (fromDate || toDate) ? `${fromDate || '처음'}~${toDate || '오늘'}` : `전체_${new Date().toISOString().slice(0, 10)}`;
+sendXlsxTemplate(res, `구매Data_${rangeLabel}.xlsx`, ['구매Data'], [[], PURCHASE_DATA_COLS, ...combinedRows]);
+});
+
+// ---- 힐마루 구매 실적 보고서(hillmaru-purchase-performance-report 스킬) 원본데이터용 다운로드 ----
+// 스킬은 "워크북 하나, 연도별로 시트 하나씩, 헤더는 3행"이라는 형식을 기대한다(SKILL.md 기준).
+// 여기서는 지정한 기간의 구매Data를 발주일 기준 연도별로 나눠 시트를 만들어준다.
+// 실제 슬라이드(PPTX) 생성은 이 파일을 다시 Claude/Cowork에 올려서 스킬로 진행한다(자동 생성 아님).
+router.get('/admin/purchase-data/report-export', async (req, res) => {
+const u = requireLogin('admin')(req, res);
+if (!u) return;
+const fromDate = /^\d{4}-\d{2}-\d{2}$/.test(req.query.from || '') ? req.query.from : '';
+const toDate = /^\d{4}-\d{2}-\d{2}$/.test(req.query.to || '') ? req.query.to : '';
+const combinedRows = await getCombinedPurchaseDataRows({ fromDate, toDate });
+
+const byYear = new Map();
+for (const row of combinedRows) {
+const year = (row[1] || '').toString().trim() || '연도미기재';
+if (!byYear.has(year)) byYear.set(year, []);
+byYear.get(year).push(row);
+}
+const years = Array.from(byYear.keys()).sort();
+const sheets = years.map((year) => {
+const yearRows = byYear.get(year).slice().sort((a, b) => String(a[10] || '').localeCompare(String(b[10] || '')));
+return {
+name: year,
+rows: [[`구매Data ${year}`], [], PURCHASE_DATA_COLS, ...yearRows],
+};
+});
+if (sheets.length === 0) {
+sheets.push({ name: '구매Data', rows: [['구매Data'], [], PURCHASE_DATA_COLS] });
+}
+const rangeLabel = (fromDate || toDate) ? `${fromDate || '처음'}~${toDate || '오늘'}` : `전체_${new Date().toISOString().slice(0, 10)}`;
+sendMultiSheetXlsx(res, `구매실적보고서_원본데이터_${rangeLabel}.xlsx`, sheets);
+});
+
 // ===== 구매 실적 보고서(PPTX) 자동 생성 =====
 // hillmaru-purchase-performance-report 스킬(원래 Python pandas + Node pptxgenjs 파이프라인)의
 // 데이터 가공(canon_merge/export_json/export_yoy) + 슬라이드 생성(generate2.js) 로직을 이 서버 안으로
@@ -2864,249 +3035,249 @@ return { submissions, minPrice, candidates, selected };
 // 스키마 보정용 스크립트였던 prep_data.py/finalize_data.py/mapping3.py는 옮길 필요가 없었다.
 // 사업장(포천/창녕)과 연도는 파라미터로 받아 하드코딩을 제거했다.
 const PPT_COL = {
-  MANAGER: 0, YEAR: 1, SITE: 2, DEPT: 3, CAT1: 4, CAT2: 5, CAT3: 6, DRAFT_NO: 7, TITLE: 8, VENDOR: 9,
-  ORDER_DATE: 10, RECEIVED_DATE: 11, ITEM_TYPE: 12, ITEM_NAME: 13, SPEC: 14, ORDER_QTY: 15, UNIT_PRICE: 16,
-  SUPPLY_PRICE: 17, RECEIVED_QTY: 18, PACK_UNIT: 19, PAYMENT_DATE: 20, PAYMENT_AMOUNT: 21, PAYMENT_RECIPIENT: 22, NOTE: 23,
+MANAGER: 0, YEAR: 1, SITE: 2, DEPT: 3, CAT1: 4, CAT2: 5, CAT3: 6, DRAFT_NO: 7, TITLE: 8, VENDOR: 9,
+ORDER_DATE: 10, RECEIVED_DATE: 11, ITEM_TYPE: 12, ITEM_NAME: 13, SPEC: 14, ORDER_QTY: 15, UNIT_PRICE: 16,
+SUPPLY_PRICE: 17, RECEIVED_QTY: 18, PACK_UNIT: 19, PAYMENT_DATE: 20, PAYMENT_AMOUNT: 21, PAYMENT_RECIPIENT: 22, NOTE: 23,
 };
 const PPT_C3N = 24; // pptNormalizeCategories가 덧붙이는 정규화된 과목3(과목3_norm) 인덱스
 
 function pptNum(v) {
-  const n = Number(String(v == null ? '' : v).replace(/,/g, ''));
-  return Number.isFinite(n) ? n : 0;
+const n = Number(String(v == null ? '' : v).replace(/,/g, ''));
+return Number.isFinite(n) ? n : 0;
 }
 function pptSiteBare(s) {
-  return String(s || '').replace(/^힐마루\s*/, '').trim();
+return String(s || '').replace(/^힐마루\s*/, '').trim();
 }
 function pptMedian(arr) {
-  if (!arr.length) return 0;
-  const s = arr.slice().sort((a, b) => a - b);
-  const mid = Math.floor(s.length / 2);
-  return s.length % 2 ? s[mid] : (s[mid - 1] + s[mid]) / 2;
+if (!arr.length) return 0;
+const s = arr.slice().sort((a, b) => a - b);
+const mid = Math.floor(s.length / 2);
+return s.length % 2 ? s[mid] : (s[mid - 1] + s[mid]) / 2;
 }
 function pptSumBy(rows, keyFn, valFn) {
-  const m = new Map();
-  for (const r of rows) {
-    const k = keyFn(r);
-    m.set(k, (m.get(k) || 0) + valFn(r));
-  }
-  return m;
+const m = new Map();
+for (const r of rows) {
+const k = keyFn(r);
+m.set(k, (m.get(k) || 0) + valFn(r));
+}
+return m;
 }
 function pptSortedDesc(map) {
-  return Array.from(map.entries()).sort((a, b) => b[1] - a[1]);
+return Array.from(map.entries()).sort((a, b) => b[1] - a[1]);
 }
 
 // canon_merge.py 포팅: 표기(공백/쉼표/괄호)만 다른 같은 뜻의 과목3 값을 가장 빈도 높은 표기로 합친다.
 function pptCanonKey(s) {
-  return String(s == null ? '' : s).replace(/[\s,]+/g, '').replace(/\(/g, '/').replace(/\)/g, '');
+return String(s == null ? '' : s).replace(/[\s,]+/g, '').replace(/\(/g, '/').replace(/\)/g, '');
 }
 const PPT_GROUP2_OVERRIDE = { '락카 소모품': '락카 소모품', '시설': '시설', '시설 소모품': '시설', '시설물': '시설' };
 function pptNormalizeCategories(rows) {
-  const counts = new Map();
-  rows.forEach((r) => { const c3 = r[PPT_COL.CAT3]; if (c3) counts.set(c3, (counts.get(c3) || 0) + 1); });
-  const groups = new Map();
-  counts.forEach((cnt, cat) => {
-    const k = pptCanonKey(cat);
-    if (!groups.has(k)) groups.set(k, []);
-    groups.get(k).push([cat, cnt]);
-  });
-  const canonMap = new Map();
-  groups.forEach((variants) => {
-    const canonical = variants.slice().sort((a, b) => b[1] - a[1])[0][0];
-    variants.forEach(([cat]) => canonMap.set(cat, canonical));
-  });
-  return rows.map((r) => {
-    const out = r.slice();
-    let c3norm = out[PPT_COL.CAT3] ? (canonMap.get(out[PPT_COL.CAT3]) || out[PPT_COL.CAT3]) : '기타';
-    const cat2 = out[PPT_COL.CAT2];
-    if (cat2 && PPT_GROUP2_OVERRIDE[cat2]) c3norm = PPT_GROUP2_OVERRIDE[cat2];
-    out[PPT_C3N] = c3norm;
-    return out;
-  });
+const counts = new Map();
+rows.forEach((r) => { const c3 = r[PPT_COL.CAT3]; if (c3) counts.set(c3, (counts.get(c3) || 0) + 1); });
+const groups = new Map();
+counts.forEach((cnt, cat) => {
+const k = pptCanonKey(cat);
+if (!groups.has(k)) groups.set(k, []);
+groups.get(k).push([cat, cnt]);
+});
+const canonMap = new Map();
+groups.forEach((variants) => {
+const canonical = variants.slice().sort((a, b) => b[1] - a[1])[0][0];
+variants.forEach(([cat]) => canonMap.set(cat, canonical));
+});
+return rows.map((r) => {
+const out = r.slice();
+let c3norm = out[PPT_COL.CAT3] ? (canonMap.get(out[PPT_COL.CAT3]) || out[PPT_COL.CAT3]) : '기타';
+const cat2 = out[PPT_COL.CAT2];
+if (cat2 && PPT_GROUP2_OVERRIDE[cat2]) c3norm = PPT_GROUP2_OVERRIDE[cat2];
+out[PPT_C3N] = c3norm;
+return out;
+});
 }
 
 // export_json.py(렌더링에 실제로 쓰이는 필드만) + export_yoy.py 포팅.
 // site: '포천' 또는 '창녕'. mainPeriod: 기준 연도(비우면 데이터상 가장 최근 연도).
 function buildPurchaseReportData({ rows, site, mainPeriod }) {
-  const siteRowsRaw = rows.filter((r) => pptSiteBare(r[PPT_COL.SITE]) === site);
-  const siteRows = pptNormalizeCategories(siteRowsRaw);
-  const periods = Array.from(new Set(siteRows.map((r) => String(r[PPT_COL.YEAR] || '').trim()).filter(Boolean))).sort();
-  if (periods.length === 0) return null;
-  const finalMainPeriod = mainPeriod && periods.includes(mainPeriod) ? mainPeriod : periods[periods.length - 1];
-  const main = siteRows.filter((r) => String(r[PPT_COL.YEAR] || '').trim() === finalMainPeriod);
-  if (main.length === 0) return null;
-  
-  const TOTAL = main.reduce((s, r) => s + pptNum(r[PPT_COL.SUPPLY_PRICE]), 0);
-  
-  const catSums = pptSumBy(main, (r) => r[PPT_C3N] || '기타', (r) => pptNum(r[PPT_COL.SUPPLY_PRICE]));
-  const catSorted = pptSortedDesc(catSums);
-  const TOP_CAT_N = 4;
-  const topCats = catSorted.slice(0, TOP_CAT_N);
-  const restCatSum = catSorted.slice(TOP_CAT_N).reduce((s, [, v]) => s + v, 0);
-  const catChart = [...topCats.map(([k, v]) => [k, Math.round(v)]), ['그 외', Math.round(restCatSum)]];
-  const catTopNames = topCats.map(([k]) => k);
-  
-  const vendSums = pptSumBy(main, (r) => r[PPT_COL.VENDOR] || '', (r) => pptNum(r[PPT_COL.SUPPLY_PRICE]));
-  const vendSorted = pptSortedDesc(vendSums);
-  const TOP_VEND_N = 5;
-  const topVend = vendSorted.slice(0, TOP_VEND_N);
-  const restVendN = Math.max(0, vendSorted.length - TOP_VEND_N);
-  const restVendSum = vendSorted.slice(TOP_VEND_N).reduce((s, [, v]) => s + v, 0);
-  const vendChart = [...topVend.map(([k, v]) => [k, Math.round(v)]), [`그 외 ${restVendN}개 업체`, Math.round(restVendSum)]];
-  const vendTopNames = topVend.map(([k]) => k);
-  
-  // 월별 세부: 실제로 데이터에 존재하는 월만 컬럼으로 쓴다(기존 스킬은 상반기 1~6월을 하드코딩했지만,
-  // 우리는 이미 from~to 기간으로 걸러진 데이터를 받으므로 "실제 존재하는 월"이 곧 조회 기간이 된다).
-  function monthKeyOf(row) {
-    const d = String(row[PPT_COL.ORDER_DATE] || '');
-    const m = d.match(/^(\d{4})-(\d{2})-\d{2}$/);
-    if (!m || m[1] !== finalMainPeriod.slice(0, 4)) return '기타';
-    return Number(m[2]);
-  }
-  const presentMonths = Array.from(new Set(main.map(monthKeyOf).filter((m) => m !== '기타'))).sort((a, b) => a - b);
-  const hasOther = main.some((r) => monthKeyOf(r) === '기타');
-  const monthCols = [...presentMonths, ...(hasOther ? ['기타'] : [])];
-  const monthColLabels = [...presentMonths.map((m) => `${m}월`), ...(hasOther ? ['기타(범위외)'] : [])];
-  
-  const MONTHLY_N = 15;
-  const mtopCats = catSorted.slice(0, MONTHLY_N).map(([k]) => k);
-  const monthlyCat = {};
-  [...mtopCats, '그 외'].forEach((c) => { monthlyCat[c] = monthCols.map(() => 0); });
-  main.forEach((r) => {
-    const c = r[PPT_C3N] || '기타';
-    const bucket = mtopCats.includes(c) ? c : '그 외';
-    const mi = monthCols.indexOf(monthKeyOf(r));
-    if (mi >= 0) monthlyCat[bucket][mi] += pptNum(r[PPT_COL.SUPPLY_PRICE]);
-  });
-  const mtopVends = vendSorted.slice(0, MONTHLY_N).map(([k]) => k);
-  const monthlyVend = {};
-  [...mtopVends, '그 외'].forEach((v) => { monthlyVend[v] = monthCols.map(() => 0); });
-  main.forEach((r) => {
-    const v = r[PPT_COL.VENDOR] || '';
-    const bucket = mtopVends.includes(v) ? v : '그 외';
-    const mi = monthCols.indexOf(monthKeyOf(r));
-    if (mi >= 0) monthlyVend[bucket][mi] += pptNum(r[PPT_COL.SUPPLY_PRICE]);
-  });
-  const monthlyCatTotal = monthCols.map((mk) => main.reduce((s, r) => (monthKeyOf(r) === mk ? s + pptNum(r[PPT_COL.SUPPLY_PRICE]) : s), 0)).map((v) => Math.round(v));
-  
-  function itemDetail(subRows, topN) {
-    const amtG = pptSumBy(subRows, (r) => r[PPT_COL.ITEM_NAME] || '(품목명 없음)', (r) => pptNum(r[PPT_COL.SUPPLY_PRICE]));
-    const qtyG = pptSumBy(subRows, (r) => r[PPT_COL.ITEM_NAME] || '(품목명 없음)', (r) => pptNum(r[PPT_COL.ORDER_QTY]));
-    const sorted = pptSortedDesc(amtG);
-    const top = sorted.slice(0, topN);
-    const restN = Math.max(0, sorted.length - topN);
-    const restAmt = sorted.slice(topN).reduce((s, [, v]) => s + v, 0);
-    const items = top.map(([name, amt]) => {
-      const qty = qtyG.get(name) || 0;
-      const unitPrice = qty ? Math.round(amt / qty) : 0;
-      return [name, qty || 0, unitPrice, Math.round(amt)];
-    });
-    if (restN > 0) items.push([`그 외 ${restN}개 품목`, null, null, Math.round(restAmt)]);
-    return { total: Math.round(sorted.reduce((s, [, v]) => s + v, 0)), items };
-  }
-  const catItems = {};
-  catTopNames.forEach((c) => { catItems[c] = itemDetail(main.filter((r) => (r[PPT_C3N] || '기타') === c), 18); });
-  const vendItems = {};
-  vendTopNames.forEach((v) => {
-    const sub = main.filter((r) => (r[PPT_COL.VENDOR] || '') === v);
-    const detail = itemDetail(sub, 20);
-    const cat3Counts = pptSumBy(sub, (r) => r[PPT_C3N] || '기타', () => 1);
-    const modeSorted = pptSortedDesc(cat3Counts);
-    vendItems[v] = { ...detail, main_cat: modeSorted.length ? modeSorted[0][0] : '' };
-  });
-  
-  // 매트릭스1: 지출액 x 발주빈도 (상위 10개 품목구분, 품의번호 unique count 기준)
-  const orderSetByCat = new Map();
-  main.forEach((r) => {
-    const c = r[PPT_C3N] || '기타';
-    if (!orderSetByCat.has(c)) orderSetByCat.set(c, new Set());
-    orderSetByCat.get(c).add(String(r[PPT_COL.DRAFT_NO] || ''));
-  });
-  const cat10 = catSorted.slice(0, 10).map(([name, amt]) => ({ name, 금액: Math.round(amt), 건수: orderSetByCat.get(name) ? orderSetByCat.get(name).size : 0 }));
-  const costMed = pptMedian(cat10.map((d) => d.금액));
-  const freqMed = pptMedian(cat10.map((d) => d.건수));
-  const matrix1 = cat10.map((d) => ({ ...d, quad: d.금액 >= costMed && d.건수 >= freqMed ? 'A' : d.금액 >= costMed ? 'B' : d.건수 >= freqMed ? 'C' : 'D' }));
-  
-  // ABC 분석 (파레토: 누적 70%=A, 90%=B, 100%=C)
-  const catRankTotal = catSorted.reduce((s, [, v]) => s + v, 0) || 1;
-  let cum = 0;
-  const abcItems = { A: [], B: [], C: [] };
-  catSorted.forEach(([name, amt]) => {
-    cum += amt;
-    const pct = cum / catRankTotal;
-    const grade = pct <= 0.70 ? 'A' : pct <= 0.90 ? 'B' : 'C';
-    abcItems[grade].push({ name, 금액: Math.round(amt), pct: Math.round((cum / catRankTotal) * 1000) / 10 });
-  });
-  const abcSummary = {};
-  ['A', 'B', 'C'].forEach((g) => {
-    const total = abcItems[g].reduce((s, x) => s + x.금액, 0);
-    abcSummary[g] = { count: abcItems[g].length, total, pct_of_all: Math.round((total / catRankTotal) * 1000) / 10 };
-  });
-  
-  // 정기계약 전환 후보: 발주건수(품의번호 unique) 5건 이상 업체
-  const vendOrderSets = new Map();
-  const vendCatCounts = new Map();
-  main.forEach((r) => {
-    const v = r[PPT_COL.VENDOR] || '';
-    if (!vendOrderSets.has(v)) vendOrderSets.set(v, new Set());
-    vendOrderSets.get(v).add(String(r[PPT_COL.DRAFT_NO] || ''));
-    if (!vendCatCounts.has(v)) vendCatCounts.set(v, new Map());
-    const cm = vendCatCounts.get(v);
-    const c = r[PPT_C3N] || '기타';
-    cm.set(c, (cm.get(c) || 0) + 1);
-  });
-  const blanketCandidates = Array.from(vendOrderSets.entries())
-    .map(([v, set]) => ({ name: v, 건수: set.size, 금액: Math.round(vendSums.get(v) || 0), 주요품목: pptSortedDesc(vendCatCounts.get(v))[0] ? pptSortedDesc(vendCatCounts.get(v))[0][0] : '' }))
-    .filter((x) => x.건수 >= 5)
-    .sort((a, b) => b.건수 - a.건수)
-    .slice(0, 6);
-  
-  // 계절성 (월별 발주 패턴, '기타' 제외하고 최다 지출월 탐색)
-  const seasonLabels = monthColLabels.length ? monthColLabels : ['(데이터 없음)'];
-  const seasonValues = monthlyCatTotal.length ? monthlyCatTotal : [0];
-  let peakIdx = -1;
-  presentMonths.forEach((_, i) => { if (peakIdx === -1 || seasonValues[i] > seasonValues[peakIdx]) peakIdx = i; });
-  const peakMonth = peakIdx >= 0 ? `${presentMonths[peakIdx]}월` : '-';
-  const peakAmt = peakIdx >= 0 ? (seasonValues[peakIdx] || 0) : 0;
-  const peakDriversMap = pptSumBy(main.filter((r) => peakIdx >= 0 && monthKeyOf(r) === presentMonths[peakIdx]), (r) => r[PPT_C3N] || '기타', (r) => pptNum(r[PPT_COL.SUPPLY_PRICE]));
-  const peakDrivers = pptSortedDesc(peakDriversMap).slice(0, 3).map(([name, amt]) => ({ name, 금액: Math.round(amt) }));
-  
-  // 연도별 신규/이탈 거래업체 (mainPeriod보다 이전 연도들 전체와 비교)
-  const mainIdx = periods.indexOf(finalMainPeriod);
-  const priorVendors = new Set(siteRows.filter((r) => periods.indexOf(String(r[PPT_COL.YEAR]).trim()) < mainIdx).map((r) => r[PPT_COL.VENDOR]).filter(Boolean));
-  const mainVendors = new Set(main.map((r) => r[PPT_COL.VENDOR]).filter(Boolean));
-  const newVendorSet = new Set(Array.from(mainVendors).filter((v) => !priorVendors.has(v)));
-  const churnedSet = new Set(Array.from(priorVendors).filter((v) => !mainVendors.has(v)));
-  const newVendorAmt = pptSumBy(main.filter((r) => newVendorSet.has(r[PPT_COL.VENDOR])), (r) => r[PPT_COL.VENDOR], (r) => pptNum(r[PPT_COL.SUPPLY_PRICE]));
-  const newVendors = pptSortedDesc(newVendorAmt).slice(0, 8).map(([name, amt]) => ({ name, 금액: Math.round(amt) }));
-  const priorRows = siteRows.filter((r) => churnedSet.has(r[PPT_COL.VENDOR]) && periods.indexOf(String(r[PPT_COL.YEAR]).trim()) < mainIdx);
-  const churnAmt = pptSumBy(priorRows, (r) => r[PPT_COL.VENDOR], (r) => pptNum(r[PPT_COL.SUPPLY_PRICE]));
-  const churnedVendors = pptSortedDesc(churnAmt).slice(0, 8).map(([name, amt]) => ({ name, 금액: Math.round(amt) }));
-  
-  // YoY: 사업장 전체 연도별 총액 + 상위 품목구분/업체별 연도별 금액
-  const yoy = {};
-  periods.forEach((p) => { yoy[p] = Math.round(siteRows.filter((r) => String(r[PPT_COL.YEAR]).trim() === p).reduce((s, r) => s + pptNum(r[PPT_COL.SUPPLY_PRICE]), 0)); });
-  const catYoy = {};
-  catTopNames.forEach((c) => {
-    catYoy[c] = periods.map((p) => Math.round(siteRows.filter((r) => String(r[PPT_COL.YEAR]).trim() === p && (r[PPT_C3N] || '기타') === c).reduce((s, r) => s + pptNum(r[PPT_COL.SUPPLY_PRICE]), 0)));
-  });
-  const vendYoy = {};
-  vendTopNames.forEach((v) => {
-    vendYoy[v] = periods.map((p) => Math.round(siteRows.filter((r) => String(r[PPT_COL.YEAR]).trim() === p && (r[PPT_COL.VENDOR] || '') === v).reduce((s, r) => s + pptNum(r[PPT_COL.SUPPLY_PRICE]), 0)));
-  });
-  
-  return {
-    site, mainPeriod: finalMainPeriod, periods,
-    total_amount: Math.round(TOTAL), total_cat_count: catSorted.length, total_vend_count: vendSorted.length,
-    yoy, cat_chart: catChart, vend_chart: vendChart,
-    cat_top_names: catTopNames, vend_top_names: vendTopNames, rest_vend_n: restVendN,
-    month_cols: monthColLabels, monthly_cat: monthlyCat, monthly_vend: monthlyVend, monthly_cat_total: monthlyCatTotal,
-    cat_items: catItems, vend_items: vendItems,
-    matrix1, abc_summary: abcSummary, abc_items: abcItems, blanket_candidates: blanketCandidates,
-    seasonality: { labels: seasonLabels, values: seasonValues, peak_month: peakMonth, peak_amt: Math.round(peakAmt), peak_drivers: peakDrivers },
-    new_vendor_count: newVendorSet.size, new_vendors: newVendors,
-    churned_vendor_count: churnedSet.size, churned_vendors: churnedVendors,
-    cat_yoy: catYoy, vend_yoy: vendYoy,
-  };
+const siteRowsRaw = rows.filter((r) => pptSiteBare(r[PPT_COL.SITE]) === site);
+const siteRows = pptNormalizeCategories(siteRowsRaw);
+const periods = Array.from(new Set(siteRows.map((r) => String(r[PPT_COL.YEAR] || '').trim()).filter(Boolean))).sort();
+if (periods.length === 0) return null;
+const finalMainPeriod = mainPeriod && periods.includes(mainPeriod) ? mainPeriod : periods[periods.length - 1];
+const main = siteRows.filter((r) => String(r[PPT_COL.YEAR] || '').trim() === finalMainPeriod);
+if (main.length === 0) return null;
+
+const TOTAL = main.reduce((s, r) => s + pptNum(r[PPT_COL.SUPPLY_PRICE]), 0);
+
+const catSums = pptSumBy(main, (r) => r[PPT_C3N] || '기타', (r) => pptNum(r[PPT_COL.SUPPLY_PRICE]));
+const catSorted = pptSortedDesc(catSums);
+const TOP_CAT_N = 4;
+const topCats = catSorted.slice(0, TOP_CAT_N);
+const restCatSum = catSorted.slice(TOP_CAT_N).reduce((s, [, v]) => s + v, 0);
+const catChart = [...topCats.map(([k, v]) => [k, Math.round(v)]), ['그 외', Math.round(restCatSum)]];
+const catTopNames = topCats.map(([k]) => k);
+
+const vendSums = pptSumBy(main, (r) => r[PPT_COL.VENDOR] || '', (r) => pptNum(r[PPT_COL.SUPPLY_PRICE]));
+const vendSorted = pptSortedDesc(vendSums);
+const TOP_VEND_N = 5;
+const topVend = vendSorted.slice(0, TOP_VEND_N);
+const restVendN = Math.max(0, vendSorted.length - TOP_VEND_N);
+const restVendSum = vendSorted.slice(TOP_VEND_N).reduce((s, [, v]) => s + v, 0);
+const vendChart = [...topVend.map(([k, v]) => [k, Math.round(v)]), [`그 외 ${restVendN}개 업체`, Math.round(restVendSum)]];
+const vendTopNames = topVend.map(([k]) => k);
+
+// 월별 세부: 실제로 데이터에 존재하는 월만 컬럼으로 쓴다(기존 스킬은 상반기 1~6월을 하드코딩했지만,
+// 우리는 이미 from~to 기간으로 걸러진 데이터를 받으므로 "실제 존재하는 월"이 곧 조회 기간이 된다).
+function monthKeyOf(row) {
+const d = String(row[PPT_COL.ORDER_DATE] || '');
+const m = d.match(/^(\d{4})-(\d{2})-\d{2}$/);
+if (!m || m[1] !== finalMainPeriod.slice(0, 4)) return '기타';
+return Number(m[2]);
+}
+const presentMonths = Array.from(new Set(main.map(monthKeyOf).filter((m) => m !== '기타'))).sort((a, b) => a - b);
+const hasOther = main.some((r) => monthKeyOf(r) === '기타');
+const monthCols = [...presentMonths, ...(hasOther ? ['기타'] : [])];
+const monthColLabels = [...presentMonths.map((m) => `${m}월`), ...(hasOther ? ['기타(범위외)'] : [])];
+
+const MONTHLY_N = 15;
+const mtopCats = catSorted.slice(0, MONTHLY_N).map(([k]) => k);
+const monthlyCat = {};
+[...mtopCats, '그 외'].forEach((c) => { monthlyCat[c] = monthCols.map(() => 0); });
+main.forEach((r) => {
+const c = r[PPT_C3N] || '기타';
+const bucket = mtopCats.includes(c) ? c : '그 외';
+const mi = monthCols.indexOf(monthKeyOf(r));
+if (mi >= 0) monthlyCat[bucket][mi] += pptNum(r[PPT_COL.SUPPLY_PRICE]);
+});
+const mtopVends = vendSorted.slice(0, MONTHLY_N).map(([k]) => k);
+const monthlyVend = {};
+[...mtopVends, '그 외'].forEach((v) => { monthlyVend[v] = monthCols.map(() => 0); });
+main.forEach((r) => {
+const v = r[PPT_COL.VENDOR] || '';
+const bucket = mtopVends.includes(v) ? v : '그 외';
+const mi = monthCols.indexOf(monthKeyOf(r));
+if (mi >= 0) monthlyVend[bucket][mi] += pptNum(r[PPT_COL.SUPPLY_PRICE]);
+});
+const monthlyCatTotal = monthCols.map((mk) => main.reduce((s, r) => (monthKeyOf(r) === mk ? s + pptNum(r[PPT_COL.SUPPLY_PRICE]) : s), 0)).map((v) => Math.round(v));
+
+function itemDetail(subRows, topN) {
+const amtG = pptSumBy(subRows, (r) => r[PPT_COL.ITEM_NAME] || '(품목명 없음)', (r) => pptNum(r[PPT_COL.SUPPLY_PRICE]));
+const qtyG = pptSumBy(subRows, (r) => r[PPT_COL.ITEM_NAME] || '(품목명 없음)', (r) => pptNum(r[PPT_COL.ORDER_QTY]));
+const sorted = pptSortedDesc(amtG);
+const top = sorted.slice(0, topN);
+const restN = Math.max(0, sorted.length - topN);
+const restAmt = sorted.slice(topN).reduce((s, [, v]) => s + v, 0);
+const items = top.map(([name, amt]) => {
+const qty = qtyG.get(name) || 0;
+const unitPrice = qty ? Math.round(amt / qty) : 0;
+return [name, qty || 0, unitPrice, Math.round(amt)];
+});
+if (restN > 0) items.push([`그 외 ${restN}개 품목`, null, null, Math.round(restAmt)]);
+return { total: Math.round(sorted.reduce((s, [, v]) => s + v, 0)), items };
+}
+const catItems = {};
+catTopNames.forEach((c) => { catItems[c] = itemDetail(main.filter((r) => (r[PPT_C3N] || '기타') === c), 18); });
+const vendItems = {};
+vendTopNames.forEach((v) => {
+const sub = main.filter((r) => (r[PPT_COL.VENDOR] || '') === v);
+const detail = itemDetail(sub, 20);
+const cat3Counts = pptSumBy(sub, (r) => r[PPT_C3N] || '기타', () => 1);
+const modeSorted = pptSortedDesc(cat3Counts);
+vendItems[v] = { ...detail, main_cat: modeSorted.length ? modeSorted[0][0] : '' };
+});
+
+// 매트릭스1: 지출액 x 발주빈도 (상위 10개 품목구분, 품의번호 unique count 기준)
+const orderSetByCat = new Map();
+main.forEach((r) => {
+const c = r[PPT_C3N] || '기타';
+if (!orderSetByCat.has(c)) orderSetByCat.set(c, new Set());
+orderSetByCat.get(c).add(String(r[PPT_COL.DRAFT_NO] || ''));
+});
+const cat10 = catSorted.slice(0, 10).map(([name, amt]) => ({ name, 금액: Math.round(amt), 건수: orderSetByCat.get(name) ? orderSetByCat.get(name).size : 0 }));
+const costMed = pptMedian(cat10.map((d) => d.금액));
+const freqMed = pptMedian(cat10.map((d) => d.건수));
+const matrix1 = cat10.map((d) => ({ ...d, quad: d.금액 >= costMed && d.건수 >= freqMed ? 'A' : d.금액 >= costMed ? 'B' : d.건수 >= freqMed ? 'C' : 'D' }));
+
+// ABC 분석 (파레토: 누적 70%=A, 90%=B, 100%=C)
+const catRankTotal = catSorted.reduce((s, [, v]) => s + v, 0) || 1;
+let cum = 0;
+const abcItems = { A: [], B: [], C: [] };
+catSorted.forEach(([name, amt]) => {
+cum += amt;
+const pct = cum / catRankTotal;
+const grade = pct <= 0.70 ? 'A' : pct <= 0.90 ? 'B' : 'C';
+abcItems[grade].push({ name, 금액: Math.round(amt), pct: Math.round((cum / catRankTotal) * 1000) / 10 });
+});
+const abcSummary = {};
+['A', 'B', 'C'].forEach((g) => {
+const total = abcItems[g].reduce((s, x) => s + x.금액, 0);
+abcSummary[g] = { count: abcItems[g].length, total, pct_of_all: Math.round((total / catRankTotal) * 1000) / 10 };
+});
+
+// 정기계약 전환 후보: 발주건수(품의번호 unique) 5건 이상 업체
+const vendOrderSets = new Map();
+const vendCatCounts = new Map();
+main.forEach((r) => {
+const v = r[PPT_COL.VENDOR] || '';
+if (!vendOrderSets.has(v)) vendOrderSets.set(v, new Set());
+vendOrderSets.get(v).add(String(r[PPT_COL.DRAFT_NO] || ''));
+if (!vendCatCounts.has(v)) vendCatCounts.set(v, new Map());
+const cm = vendCatCounts.get(v);
+const c = r[PPT_C3N] || '기타';
+cm.set(c, (cm.get(c) || 0) + 1);
+});
+const blanketCandidates = Array.from(vendOrderSets.entries())
+.map(([v, set]) => ({ name: v, 건수: set.size, 금액: Math.round(vendSums.get(v) || 0), 주요품목: pptSortedDesc(vendCatCounts.get(v))[0] ? pptSortedDesc(vendCatCounts.get(v))[0][0] : '' }))
+.filter((x) => x.건수 >= 5)
+.sort((a, b) => b.건수 - a.건수)
+.slice(0, 6);
+
+// 계절성 (월별 발주 패턴, '기타' 제외하고 최다 지출월 탐색)
+const seasonLabels = monthColLabels.length ? monthColLabels : ['(데이터 없음)'];
+const seasonValues = monthlyCatTotal.length ? monthlyCatTotal : [0];
+let peakIdx = -1;
+presentMonths.forEach((_, i) => { if (peakIdx === -1 || seasonValues[i] > seasonValues[peakIdx]) peakIdx = i; });
+const peakMonth = peakIdx >= 0 ? `${presentMonths[peakIdx]}월` : '-';
+const peakAmt = peakIdx >= 0 ? (seasonValues[peakIdx] || 0) : 0;
+const peakDriversMap = pptSumBy(main.filter((r) => peakIdx >= 0 && monthKeyOf(r) === presentMonths[peakIdx]), (r) => r[PPT_C3N] || '기타', (r) => pptNum(r[PPT_COL.SUPPLY_PRICE]));
+const peakDrivers = pptSortedDesc(peakDriversMap).slice(0, 3).map(([name, amt]) => ({ name, 금액: Math.round(amt) }));
+
+// 연도별 신규/이탈 거래업체 (mainPeriod보다 이전 연도들 전체와 비교)
+const mainIdx = periods.indexOf(finalMainPeriod);
+const priorVendors = new Set(siteRows.filter((r) => periods.indexOf(String(r[PPT_COL.YEAR]).trim()) < mainIdx).map((r) => r[PPT_COL.VENDOR]).filter(Boolean));
+const mainVendors = new Set(main.map((r) => r[PPT_COL.VENDOR]).filter(Boolean));
+const newVendorSet = new Set(Array.from(mainVendors).filter((v) => !priorVendors.has(v)));
+const churnedSet = new Set(Array.from(priorVendors).filter((v) => !mainVendors.has(v)));
+const newVendorAmt = pptSumBy(main.filter((r) => newVendorSet.has(r[PPT_COL.VENDOR])), (r) => r[PPT_COL.VENDOR], (r) => pptNum(r[PPT_COL.SUPPLY_PRICE]));
+const newVendors = pptSortedDesc(newVendorAmt).slice(0, 8).map(([name, amt]) => ({ name, 금액: Math.round(amt) }));
+const priorRows = siteRows.filter((r) => churnedSet.has(r[PPT_COL.VENDOR]) && periods.indexOf(String(r[PPT_COL.YEAR]).trim()) < mainIdx);
+const churnAmt = pptSumBy(priorRows, (r) => r[PPT_COL.VENDOR], (r) => pptNum(r[PPT_COL.SUPPLY_PRICE]));
+const churnedVendors = pptSortedDesc(churnAmt).slice(0, 8).map(([name, amt]) => ({ name, 금액: Math.round(amt) }));
+
+// YoY: 사업장 전체 연도별 총액 + 상위 품목구분/업체별 연도별 금액
+const yoy = {};
+periods.forEach((p) => { yoy[p] = Math.round(siteRows.filter((r) => String(r[PPT_COL.YEAR]).trim() === p).reduce((s, r) => s + pptNum(r[PPT_COL.SUPPLY_PRICE]), 0)); });
+const catYoy = {};
+catTopNames.forEach((c) => {
+catYoy[c] = periods.map((p) => Math.round(siteRows.filter((r) => String(r[PPT_COL.YEAR]).trim() === p && (r[PPT_C3N] || '기타') === c).reduce((s, r) => s + pptNum(r[PPT_COL.SUPPLY_PRICE]), 0)));
+});
+const vendYoy = {};
+vendTopNames.forEach((v) => {
+vendYoy[v] = periods.map((p) => Math.round(siteRows.filter((r) => String(r[PPT_COL.YEAR]).trim() === p && (r[PPT_COL.VENDOR] || '') === v).reduce((s, r) => s + pptNum(r[PPT_COL.SUPPLY_PRICE]), 0)));
+});
+
+return {
+site, mainPeriod: finalMainPeriod, periods,
+total_amount: Math.round(TOTAL), total_cat_count: catSorted.length, total_vend_count: vendSorted.length,
+yoy, cat_chart: catChart, vend_chart: vendChart,
+cat_top_names: catTopNames, vend_top_names: vendTopNames, rest_vend_n: restVendN,
+month_cols: monthColLabels, monthly_cat: monthlyCat, monthly_vend: monthlyVend, monthly_cat_total: monthlyCatTotal,
+cat_items: catItems, vend_items: vendItems,
+matrix1, abc_summary: abcSummary, abc_items: abcItems, blanket_candidates: blanketCandidates,
+seasonality: { labels: seasonLabels, values: seasonValues, peak_month: peakMonth, peak_amt: Math.round(peakAmt), peak_drivers: peakDrivers },
+new_vendor_count: newVendorSet.size, new_vendors: newVendors,
+churned_vendor_count: churnedSet.size, churned_vendors: churnedVendors,
+cat_yoy: catYoy, vend_yoy: vendYoy,
+};
 }
 
 // generate2.js 포팅: pptxgenjs로 슬라이드를 그린다. 포천 하드코딩 텍스트/연도 배열을 모두 D(파라미터)
@@ -3116,391 +3287,392 @@ function pptFmt(n) { if (n === null || n === undefined) return ''; return Math.r
 function pptEok(n) { return (n / 100000000).toFixed(1) + '억'; }
 
 async function buildPurchasePerformancePptxBuffer(D) {
-  const NAVY = '1E2761', NAVY_D = '141B47', ICE = 'CADCFC', ICE_L = 'EAF0FC', WHITE = 'FFFFFF', GRAY = '6B7280', TXT = '232735', GOLD = 'C9A24B';
-  const pres = new pptxgen();
-  pres.layout = 'LAYOUT_WIDE';
-  const PW = 13.33, PH = 7.5;
-  let PAGE = 0;
-  
-  function footer(slide, pageNum) {
-    slide.addText('㈜동훈 그룹 기획감사팀', { x: PW - 3.5, y: PH - 0.42, w: 3.3, h: 0.3, fontFace: 'Arial', fontSize: 9, color: GRAY, align: 'right' });
-    slide.addText(String(pageNum), { x: 0.4, y: PH - 0.42, w: 0.6, h: 0.3, fontFace: 'Arial', fontSize: 9, color: GRAY, align: 'left' });
-  }
-  function contentSlide() {
-    PAGE++;
-    const slide = pres.addSlide();
-    slide.background = { color: WHITE };
-    footer(slide, PAGE);
-    return slide;
-  }
-  function titleBlock(slide, tag, title) {
-    slide.addText([{ text: tag + '  ', options: { color: NAVY, bold: true } }, { text: title, options: { color: TXT, bold: true } }],
-                  { x: 0.5, y: 0.28, w: 11.5, h: 0.55, fontFace: 'Cambria', fontSize: 22 });
-    slide.addShape(pres.ShapeType.line, { x: 0.5, y: 0.92, w: 12.33, h: 0, line: { color: ICE, width: 1.5 } });
-  }
-  function analysisCard(slide, x, y, w, text) {
-    const maxBottom = 6.85;
-    const h = Math.max(0.9, Math.min(1.5, maxBottom - y));
-    slide.addShape(pres.ShapeType.roundRect, { x, y, w, h, rectRadius: 0.05, fill: { color: ICE_L }, line: { type: 'none' } });
-    slide.addShape(pres.ShapeType.rect, { x, y, w: 0.06, h, fill: { color: GOLD }, line: { type: 'none' } });
-    slide.addText(text, { x: x + 0.2, y: y + 0.12, w: w - 0.35, h: h - 0.24, fontFace: 'Calibri', fontSize: 8.5, color: TXT, valign: 'middle', lineSpacingMultiple: 1.15 });
-  }
-  function palette4(n) {
-    const base = [NAVY, '3E5C9A', '7C93C7', '9DB3DE', 'C3D0EC', GOLD];
-    const out = [];
-    for (let i = 0; i < n; i++) out.push(i === n - 1 ? GOLD : base[i % (base.length - 1)]);
-    return out;
-  }
-  
-  const site = D.site;
-  const periods = D.periods;
-  const mainIdx = periods.indexOf(D.mainPeriod);
-  const rangeLabel = periods.length > 1 ? `${periods[0]}~${D.mainPeriod} 연도별 추이 포함` : `${D.mainPeriod} 기준`;
-  const todayStr = new Date().toLocaleDateString('ko-KR', { year: 'numeric', month: '2-digit', day: '2-digit' });
-  
-  // ---- 표지 ----
-  {
-    PAGE++;
-    const slide = pres.addSlide();
-    slide.background = { color: NAVY };
-    slide.addShape(pres.ShapeType.ellipse, { x: 10.6, y: -1.6, w: 4.6, h: 4.6, fill: { color: NAVY_D }, line: { type: 'none' } });
-    slide.addShape(pres.ShapeType.ellipse, { x: -1.4, y: 5.2, w: 3.6, h: 3.6, fill: { color: NAVY_D }, line: { type: 'none' } });
-    slide.addText(`${site} 힐마루 – 구매 실적 보고`, { x: 0.9, y: 2.55, w: 11.5, h: 0.9, fontFace: 'Cambria', fontSize: 36, bold: true, color: WHITE });
-    slide.addText(`${D.mainPeriod} 기준 (${rangeLabel})`, { x: 0.9, y: 3.35, w: 11.5, h: 0.5, fontFace: 'Calibri', fontSize: 18, color: ICE });
-    slide.addShape(pres.ShapeType.line, { x: 0.95, y: 4.05, w: 3.2, h: 0, line: { color: GOLD, width: 2 } });
-    slide.addText([
-      { text: `총 집행 금액 : ₩ ${pptFmt(D.total_amount)}`, options: { bold: true, breakLine: true } },
-      { text: `품목 구분별 비용 분석 (총 ${D.total_cat_count}개 품목구분 / 상위 ${D.cat_top_names.length}개 분석)`, options: { breakLine: true } },
-      { text: `업체별 비용 분석 (총 ${D.total_vend_count}개 업체 / 상위 ${D.vend_top_names.length}개 업체 분석)` },
-      ], { x: 0.95, y: 4.35, w: 10.5, h: 1.6, fontFace: 'Calibri', fontSize: 15, color: WHITE, lineSpacingMultiple: 1.35 });
-    slide.addText(`${todayStr}  보고`, { x: 0.95, y: 6.55, w: 6, h: 0.4, fontFace: 'Calibri', fontSize: 12, color: ICE });
-    slide.addText('㈜동훈 그룹 기획감사팀', { x: PW - 4.3, y: 6.9, w: 4, h: 0.35, fontFace: 'Arial', fontSize: 10, color: ICE, align: 'right' });
-  }
-  
-  // ---- 목차 ----
-  {
-    const slide = contentSlide();
-    slide.addText('목차', { x: 0.5, y: 0.5, w: 6, h: 0.7, fontFace: 'Cambria', fontSize: 30, bold: true, color: NAVY });
-    const toc = [
-      ['1', '연도별 비교', '3'],
-      ['2', `${D.mainPeriod} 구매내역 (품목구분별 · 업체별, 연도별 총금액)`, '4'],
-      ['3', '구매전략 수립 예시', '6'],
-      ['4', '품목구분별 집행 금액', '9'],
-      ['5', '업체별 집행 금액', String(9 + 1 + D.cat_top_names.length)],
-      ['6', '추가 분석 (월별 계절성 · 신규·이탈 거래업체)', String(9 + 1 + D.cat_top_names.length + 1 + D.vend_top_names.length)],
-      ];
-    let y = 1.75;
-    toc.forEach((row) => {
-      slide.addText(row[0], { x: 0.9, y, w: 0.5, h: 0.5, fontFace: 'Cambria', fontSize: 19, bold: true, color: GOLD });
-      slide.addText(row[1], { x: 1.5, y, w: 9, h: 0.5, fontFace: 'Calibri', fontSize: 16, color: TXT });
-      slide.addText(row[2], { x: 11.3, y, w: 1.2, h: 0.5, fontFace: 'Calibri', fontSize: 13, color: GRAY, align: 'right' });
-      slide.addShape(pres.ShapeType.line, { x: 0.9, y: y + 0.52, w: 11.6, h: 0, line: { color: ICE_L, width: 1 } });
-      y += 0.78;
-    });
-  }
-  
-  // ---- 연도별 비교 ----
-  {
-    const slide = contentSlide();
-    titleBlock(slide, '1)', `연도별 비교 (${site}, 총 집행금액)`);
-    const vals = periods.map((p) => Math.round((D.yoy[p] / 1e8) * 10) / 10);
-    slide.addChart(pres.ChartType.bar, [{ name: '총 집행금액', labels: periods, values: vals }], {
-      x: 0.6, y: 1.2, w: 7.6, h: 4.6, barDir: 'col',
-      chartColors: periods.map((p, i) => (i === mainIdx ? GOLD : NAVY)),
-      valAxisLabelFormatCode: '0.0',
-      showTitle: true, title: `연도별 총 집행금액 (${site}, 단위: 억원)`, titleFontFace: 'Calibri', titleFontSize: 13,
-      showValue: true, dataLabelFormatCode: '0.0', dataLabelPosition: 'outEnd', dataLabelFontSize: 11, dataLabelColor: NAVY, dataLabelBold: true,
-      catAxisLabelFontSize: 11, valAxisLabelFontSize: 9,
-      valGridLine: { color: ICE_L, size: 1 }, catGridLine: { style: 'none' }, showLegend: false,
-    });
-    const colW = [0.85, ...periods.map(() => 3.5 / periods.length)];
-    slide.addTable([
-      ['연도', ...periods].map((h, i) => ({ text: h, options: { bold: true, fill: { color: NAVY }, color: WHITE, align: i === 0 ? 'left' : 'right' } })),
-      ['총 공급가', ...periods.map((p) => ({ text: pptFmt(D.yoy[p]), options: { align: 'right' } }))],
-      ], { x: 8.5, y: 1.3, w: 4.35, colW, fontSize: 8, fontFace: 'Calibri', border: { type: 'solid', color: ICE_L, pt: 0.75 }, autoPage: false, margin: [2, 3, 2, 3] });
-    slide.addText('※ 선택하신 기간 조건에 따라 연도별 집계 범위가 다를 수 있습니다. 정확한 증감률 비교보다는 추세 참고용으로 확인해 주세요.',
-                  { x: 8.5, y: 2.35, w: 4.35, h: 1.0, fontFace: 'Calibri', fontSize: 9.5, italic: true, color: GRAY });
-    const prevP = mainIdx > 0 ? periods[mainIdx - 1] : null;
-    const trendTxt = prevP
-      ? (() => { const cur = D.yoy[D.mainPeriod], prev = D.yoy[prevP]; const diffPct = prev ? Math.round(((cur - prev) / prev) * 1000) / 10 : 0;
-                return `분석: ${D.mainPeriod} 총 집행금액은 ₩${pptFmt(cur)}로, 직전 연도(${prevP}) 대비 ${diffPct >= 0 ? '+' : ''}${diffPct}% ${diffPct >= 0 ? '증가' : '감소'}했습니다.`; })()
-      : `분석: ${D.mainPeriod} 총 집행금액은 ₩${pptFmt(D.yoy[D.mainPeriod])}입니다. 비교 가능한 이전 연도 데이터가 없습니다.`;
-    analysisCard(slide, 8.5, 4.3, 4.35, trendTxt);
-  }
-  
-  // ---- overviewSlide (품목구분/업체별 연도 추이) ----
-  function overviewSlide(tag, title, names, yoyMap) {
-    const slide = contentSlide();
-    titleBlock(slide, tag, title);
-    const palette = palette4(periods.length);
-    const chartSeries = periods.map((p, i) => ({ name: p, labels: names, values: names.map((n) => yoyMap[n][i]) }));
-    slide.addChart(pres.ChartType.bar, chartSeries, {
-      x: 0.5, y: 1.15, w: 7.6, h: 5.15, barDir: 'col', barGrouping: 'clustered',
-      chartColors: palette, showTitle: false, showValue: true,
-      dataLabelFormatCode: '#,##0,,"억"', dataLabelPosition: 'outEnd', dataLabelFontSize: 7.5, dataLabelColor: TXT,
-      catAxisLabelFontSize: 9.5, valAxisHidden: true,
-      valGridLine: { style: 'none' }, catGridLine: { style: 'none' }, showLegend: true, legendPos: 'b', legendFontSize: 9,
-    });
-    const colW2 = [1.3, ...periods.map(() => 3.2 / periods.length)];
-    const header = ['구분', ...periods].map((h, i) => ({ text: h, options: { bold: true, fill: { color: NAVY }, color: WHITE, align: i === 0 ? 'left' : 'right', fontSize: 8 } }));
-    const rows = [header];
-    names.forEach((n) => { rows.push([{ text: n, options: { align: 'left', fontSize: 8 } }, ...yoyMap[n].map((v) => ({ text: pptFmt(v), options: { align: 'right', fontSize: 8 } }))]); });
-    slide.addTable(rows, { x: 8.3, y: 1.15, w: 4.5, colW: colW2, fontSize: 8, fontFace: 'Calibri', border: { type: 'solid', color: ICE_L, pt: 0.75 }, autoPage: false, rowH: 0.34, margin: [2, 3, 2, 3] });
-    const footnoteY = 1.15 + rows.length * 0.34 + 0.15;
-    slide.addText('※ 연도별 집계 범위가 다를 수 있어 직접 비교보다는 추세 참고용으로 봐주세요. 0으로 표시된 구간은 해당 기간 신규 발주 기록이 없었던 경우입니다.',
-                  { x: 8.3, y: footnoteY, w: 4.5, h: 1.0, fontFace: 'Calibri', fontSize: 8.5, italic: true, color: GRAY });
-    slide.analysisY = footnoteY + 1.05;
-    return slide;
-  }
-  
-  {
-    const slide = overviewSlide('2-1)', `주요 품목구분 연도별 총금액 (${site})`, D.cat_top_names, D.cat_yoy);
-    const topPct = D.total_amount ? Math.round((D.cat_chart.slice(0, D.cat_top_names.length).reduce((s, d) => s + d[1], 0) / D.total_amount) * 100) : 0;
-    analysisCard(slide, 8.3, slide.analysisY, 4.5,
-                 `분석: 상위 ${D.cat_top_names.length}개 품목구분(${D.cat_top_names.join('·')})이 ${D.mainPeriod} 전체의 약 ${topPct}%를 차지. 연도별로도 꾸준히 지출 상위권을 유지하고 있다면 연간 계약/단가표 도입 검토 필요 (초안 — 담당자 확인 요망).`);
-  }
-  {
-    const slide = overviewSlide('2-2)', `주요 업체 연도별 총금액 (${site})`, D.vend_top_names, D.vend_yoy);
-    const topPct = D.total_amount ? Math.round((D.vend_chart.slice(0, D.vend_top_names.length).reduce((s, d) => s + d[1], 0) / D.total_amount) * 100) : 0;
-    analysisCard(slide, 8.3, slide.analysisY, 4.5,
-                 `분석: 총 ${D.total_vend_count}개 업체 중 상위 ${D.vend_top_names.length}개사가 ${D.mainPeriod} 전체의 약 ${topPct}%. 업체별로 연도에 따라 거래 규모 변동이 있다면 상위 업체 중심 연간 단가/납기 계약 체결 여지 검토 필요 (초안 — 담당자 확인 요망).`);
-  }
-  
-  // ---- 매트릭스 (지출액 x 발주빈도) ----
-  function matrixSlide(tag, title, axisXLabel, axisYLabel, axisXHint, axisYHint, data, quadMeta, fmtFn) {
-    const slide = contentSlide();
-    titleBlock(slide, tag, title);
-    slide.addText('→ 데이터 기반 자동 배치(초안): X축은 실제 지출/단가 데이터, Y축은 ' + axisYLabel + ' 데이터를 대리 지표로 사용한 결과입니다. 실제 긴급성·관리우선순위 판단은 담당자 검토가 필요합니다.',
-                  { x: 0.5, y: 1.0, w: 12.3, h: 0.38, fontFace: 'Calibri', fontSize: 10, italic: true, color: GRAY });
-    const gridX = 0.5, gridY = 1.55, gridW = 12.3, gridH = 5.55, gap = 0.22;
-    const cardW = (gridW - gap) / 2, cardH = (gridH - gap) / 2;
-    const quads = [{ k: 'A', x: gridX, y: gridY }, { k: 'B', x: gridX + cardW + gap, y: gridY }, { k: 'C', x: gridX, y: gridY + cardH + gap }, { k: 'D', x: gridX + cardW + gap, y: gridY + cardH + gap }];
-    quads.forEach((q) => {
-      const meta = quadMeta[q.k];
-      const items = data.filter((d) => d.quad === q.k);
-      slide.addShape(pres.ShapeType.roundRect, { x: q.x, y: q.y, w: cardW, h: cardH, rectRadius: 0.06, fill: { color: ICE_L }, line: { color: ICE, width: 1 } });
-      slide.addShape(pres.ShapeType.rect, { x: q.x, y: q.y, w: 0.08, h: cardH, fill: { color: NAVY }, line: { type: 'none' } });
-      slide.addShape(pres.ShapeType.ellipse, { x: q.x + 0.22, y: q.y + 0.16, w: 0.36, h: 0.36, fill: { color: NAVY }, line: { type: 'none' } });
-      slide.addText(q.k, { x: q.x + 0.22, y: q.y + 0.16, w: 0.36, h: 0.36, fontFace: 'Cambria', fontSize: 13, bold: true, color: WHITE, align: 'center', valign: 'middle' });
-      slide.addText(meta.label, { x: q.x + 0.7, y: q.y + 0.16, w: cardW - 0.94, h: 0.36, fontFace: 'Calibri', fontSize: 11, bold: true, color: NAVY, valign: 'middle' });
-      const stratH = 0.72;
-      slide.addText(meta.strategy, { x: q.x + 0.22, y: q.y + 0.58, w: cardW - 0.44, h: stratH, fontFace: 'Calibri', fontSize: 8.5, color: TXT, lineSpacingMultiple: 1.12 });
-      const dividerY = q.y + 0.58 + stratH + 0.06;
-      slide.addShape(pres.ShapeType.line, { x: q.x + 0.22, y: dividerY, w: cardW - 0.44, h: 0, line: { color: ICE, width: 0.75 } });
-      const listY = dividerY + 0.1;
-      const listH = q.y + cardH - 0.1 - listY;
-      const lineH = Math.min(0.32, listH / Math.max(items.length, 1));
-      items.forEach((d, i) => {
-        const iy = listY + i * lineH;
-        slide.addShape(pres.ShapeType.ellipse, { x: q.x + 0.24, y: iy + lineH / 2 - 0.035, w: 0.07, h: 0.07, fill: { color: GOLD }, line: { type: 'none' } });
-        slide.addText([{ text: d.name, options: { bold: true, color: NAVY } }, { text: `   ${fmtFn(d)}`, options: { color: GRAY } }],
-                      { x: q.x + 0.4, y: iy, w: cardW - 0.6, h: lineH, fontFace: 'Calibri', fontSize: 9, valign: 'middle' });
-      });
-      if (items.length === 0) slide.addText('해당 없음', { x: q.x + 0.4, y: listY, w: cardW - 0.6, h: 0.3, fontFace: 'Calibri', fontSize: 9, color: GRAY, italic: true });
-    });
-    slide.addText(`X축 지표: ${axisXLabel}${axisXHint ? ' (' + axisXHint + ')' : ''}`, { x: gridX, y: gridY + gridH + 0.12, w: gridW, h: 0.32, fontFace: 'Calibri', fontSize: 11.5, align: 'center', color: NAVY, bold: true });
-    slide.addText(`Y축 지표: ${axisYLabel}${axisYHint ? ' (' + axisYHint + ')' : ''}`, { x: gridX, y: 1.18, w: gridW, h: 0.3, fontFace: 'Calibri', fontSize: 10, color: NAVY, bold: true, align: 'right' });
-  }
-  const quadMeta1 = {
-    A: { label: '지출액 ↑ · 발주빈도 ↑', strategy: '전략: 연간 계약·단가표 작성으로 구매 프로세스 간소화, 계획구매 강화(재고관리 → 사용계획 → 발주횟수/수량/단가 개선)' },
-    B: { label: '지출액 ↑ · 발주빈도 ↓', strategy: '전략: 가격 적절성 검토 강화 — 스펙/대체품 검토 및 업체 경쟁 유도' },
-    C: { label: '지출액 ↓ · 발주빈도 ↑', strategy: '전략: 사용계획 및 재고관리 강화 → 발주횟수 감소, 발주당 수량 증대' },
-    D: { label: '지출액 ↓ · 발주빈도 ↓', strategy: '전략: 업무 효율 증가 방안 검토 (발주 횟수·관리 방식 등)' },
-  };
-  matrixSlide('3-1)', '구매전략 수립 예시 — 지출액 × 발주빈도', '총 지출액', '발주 빈도(건수)', `${D.mainPeriod} 공급가 합계`, `${D.mainPeriod} 발주 건수`, D.matrix1, quadMeta1, (d) => `${pptEok(d.금액)} · ${d.건수}건`);
-  
-  // ---- ABC 분석 ----
-  {
-    const slide = contentSlide();
-    titleBlock(slide, '3-2)', '구매전략 수립 예시 ② — ABC 분석 (파레토)');
-    slide.addText('→ 품목구분을 금액 누적 비중 기준으로 A(상위 70%) · B(70~90%) · C(90~100%) 등급으로 분류했습니다. 등급별로 관리 강도를 다르게 가져가는 것이 효율적입니다.',
-                  { x: 0.5, y: 1.0, w: 12.3, h: 0.4, fontFace: 'Calibri', fontSize: 10, italic: true, color: GRAY });
-    const gradeMeta = { A: { color: NAVY, desc: '핵심 관리 대상 — 개별 협상, 연간 계약, 정기 시장가 모니터링' }, B: { color: '3E5C9A', desc: '표준 프로세스 — 분기 단위 가격 점검, 복수 견적 유지' }, C: { color: ICE, desc: '간소화 대상 — 자동발주/카드결제 등 관리 비용 최소화' } };
-    let cardX = 0.5;
-    const cardW3 = 3.95, cardGap = 0.22;
-    ['A', 'B', 'C'].forEach((g) => {
-      const s = D.abc_summary[g];
-      slide.addShape(pres.ShapeType.roundRect, { x: cardX, y: 1.55, w: cardW3, h: 1.5, rectRadius: 0.06, fill: { color: ICE_L }, line: { color: ICE, width: 1 } });
-      slide.addShape(pres.ShapeType.rect, { x: cardX, y: 1.55, w: 0.08, h: 1.5, fill: { color: gradeMeta[g].color === ICE ? GOLD : gradeMeta[g].color }, line: { type: 'none' } });
-      slide.addText(`${g} 등급`, { x: cardX + 0.22, y: 1.65, w: cardW3 - 0.4, h: 0.35, fontFace: 'Cambria', fontSize: 15, bold: true, color: NAVY });
-      slide.addText(`${s.count}개 품목구분 · ${s.pct_of_all}%`, { x: cardX + 0.22, y: 2.0, w: cardW3 - 0.4, h: 0.3, fontFace: 'Calibri', fontSize: 11, bold: true, color: GRAY });
-      slide.addText(`${pptFmt(s.total)}원`, { x: cardX + 0.22, y: 2.28, w: cardW3 - 0.4, h: 0.3, fontFace: 'Calibri', fontSize: 11, color: TXT });
-      slide.addText(gradeMeta[g].desc, { x: cardX + 0.22, y: 2.58, w: cardW3 - 0.4, h: 0.45, fontFace: 'Calibri', fontSize: 8, color: GRAY, lineSpacingMultiple: 1.1 });
-      cardX += cardW3 + cardGap;
-    });
-    const gradeCols = [{ g: 'A', x: 0.5, label: 'A등급 품목구분 (전체)' }, { g: 'B', x: 4.55, label: 'B등급 품목구분 (상위 5개)' }, { g: 'C', x: 8.6, label: 'C등급 품목구분 (상위 5개)' }];
-    gradeCols.forEach((gc) => {
-      slide.addText(gc.label, { x: gc.x, y: 3.3, w: 3.85, h: 0.28, fontFace: 'Calibri', fontSize: 10.5, bold: true, color: NAVY });
-      const gRows = [[{ text: '품목구분', options: { bold: true, fill: { color: NAVY }, color: WHITE, fontSize: 8.5 } }, { text: '금액', options: { bold: true, fill: { color: NAVY }, color: WHITE, align: 'right', fontSize: 8.5 } }, { text: '누적%', options: { bold: true, fill: { color: NAVY }, color: WHITE, align: 'right', fontSize: 8.5 } }]];
-      D.abc_items[gc.g].slice(0, 5).forEach((x) => { gRows.push([{ text: x.name, options: { align: 'left' } }, { text: pptFmt(x.금액), options: { align: 'right' } }, { text: `${x.pct}%`, options: { align: 'right', color: GRAY } }]); });
-      slide.addTable(gRows, { x: gc.x, y: 3.62, w: 3.85, colW: [1.85, 1.3, 0.7], fontSize: 8.5, fontFace: 'Calibri', border: { type: 'solid', color: ICE_L, pt: 0.75 }, autoPage: false, rowH: 0.3 });
-      if (D.abc_items[gc.g].length > 5) slide.addText(`외 ${D.abc_items[gc.g].length - 5}개 품목구분`, { x: gc.x, y: 3.62 + gRows.length * 0.3 + 0.06, w: 3.85, h: 0.25, fontFace: 'Calibri', fontSize: 8, italic: true, color: GRAY });
-    });
-    analysisCard(slide, 0.5, 5.85, 12.3,
-                 `분석: 상위 ${D.abc_summary.A.count}개 품목구분(A등급)이 전체 지출의 ${D.abc_summary.A.pct_of_all}%를 차지합니다. 이 품목들에 구매 담당자의 협상·모니터링 역량을 집중하고, C등급(${D.abc_summary.C.count}개, ${D.abc_summary.C.pct_of_all}%)은 발주 프로세스를 간소화해 행정 부담을 줄이는 것을 권장합니다 (초안 — 담당자 확인 요망).`);
-  }
-  
-  // ---- 정기계약 전환 후보 ----
-  {
-    const slide = contentSlide();
-    titleBlock(slide, '3-3)', '구매전략 수립 예시 ③ — 정기계약 전환 후보');
-    slide.addText(`→ ${D.mainPeriod} 발주 건수가 많은(5건 이상) 업체입니다. 반복 발주가 잦은 업체는 건별 협상 대신 연간 단가계약(블랭킷 오더)으로 전환하면 행정 비용을 줄이고 단가도 안정시킬 수 있습니다.`,
-                  { x: 0.5, y: 1.0, w: 12.3, h: 0.55, fontFace: 'Calibri', fontSize: 10.5, italic: true, color: GRAY });
-    const rows = [[{ text: '업체명', options: { bold: true, fill: { color: NAVY }, color: WHITE } }, { text: '주요 품목구분', options: { bold: true, fill: { color: NAVY }, color: WHITE } }, { text: `${D.mainPeriod} 발주건수`, options: { bold: true, fill: { color: NAVY }, color: WHITE, align: 'right' } }, { text: `${D.mainPeriod} 금액`, options: { bold: true, fill: { color: NAVY }, color: WHITE, align: 'right' } }]];
-    if (D.blanket_candidates.length === 0) {
-      rows.push([{ text: '해당 없음 (5건 이상 발주 업체 없음)', options: { align: 'left', color: GRAY } }, { text: '' }, { text: '' }, { text: '' }]);
-    } else {
-      D.blanket_candidates.forEach((b) => { rows.push([{ text: b.name, options: { align: 'left', bold: true } }, { text: b.주요품목, options: { align: 'left', color: GRAY } }, { text: `${b.건수}건`, options: { align: 'right' } }, { text: pptFmt(b.금액), options: { align: 'right' } }]); });
-    }
-    slide.addTable(rows, { x: 0.5, y: 1.75, w: 9.2, colW: [2.1, 2.3, 1.8, 2.0], fontSize: 10, fontFace: 'Calibri', border: { type: 'solid', color: ICE_L, pt: 0.75 }, autoPage: false, rowH: 0.42 });
-    analysisCard(slide, 9.9, 1.75, 2.9,
-                 '전략: 발주 건수가 많을수록 건당 행정 비용(품의·검수·정산)이 누적됩니다. 상위 업체부터 연간 단가계약을 맺어 발주는 자동화하고, 담당자는 예외 상황 관리에 집중하는 방향을 권장합니다 (초안 — 담당자 확인 요망).');
-  }
-  
-  // ---- 품목구분별 집행금액 (월별 세부) ----
-  function monthlyDetailSlide(tag, title, label, monthlyMap, monthlyTotalArr) {
-    const slide = contentSlide();
-    titleBlock(slide, tag, title);
-    const months = D.month_cols;
-    const labelW = 2.3, totalW = 1.5;
-    const perMonthW = months.length ? (12.3 - labelW - totalW) / months.length : 0;
-    const colW = [labelW, ...months.map(() => perMonthW), totalW];
-    const header = ['구분', ...months, '총합계'].map((h) => ({ text: h, options: { bold: true, fill: { color: NAVY }, color: WHITE, align: h === '구분' ? 'left' : 'right', fontSize: months.length > 8 ? 7.5 : 9 } }));
-    const rows = [header];
-    rows.push([{ text: '총합계', options: { bold: true, align: 'left' } }, ...monthlyTotalArr.map((v) => ({ text: pptFmt(v), options: { bold: true, align: 'right' } })), { text: pptFmt(D.total_amount), options: { bold: true, align: 'right' } }]);
-    Object.keys(monthlyMap).forEach((key) => {
-      const vals = monthlyMap[key];
-      const sum = vals.reduce((a, b) => a + b, 0);
-      rows.push([{ text: key, options: { align: 'left', bold: key === '그 외' } }, ...vals.map((v) => ({ text: v ? pptFmt(v) : '', options: { align: 'right' } })), { text: pptFmt(sum), options: { align: 'right' } }]);
-    });
-    slide.addTable(rows, { x: 0.5, y: 1.15, w: 12.3, colW, fontSize: months.length > 8 ? 7.5 : 8.5, fontFace: 'Calibri', border: { type: 'solid', color: ICE_L, pt: 0.75 }, autoPage: false, rowH: 0.29 });
-    if (D.month_cols.some((m) => m.startsWith('기타'))) {
-      slide.addText(`※ '기타'는 ${D.mainPeriod} 조회 기간 범위 밖 발주일자 건입니다.`, { x: 0.5, y: 1.15 + rows.length * 0.29 + 0.08, w: 6, h: 0.25, fontFace: 'Calibri', fontSize: 8, italic: true, color: GRAY });
-    }
-  }
-  monthlyDetailSlide('4-1)', '품목구분별 집행 금액 (월별 세부)', '구분', D.monthly_cat, D.monthly_cat_total);
-  
-  // ---- 품목구분별 상세 (top N) ----
-  D.cat_top_names.forEach((cat, i) => {
-    const slide = contentSlide();
-    titleBlock(slide, `4-${i + 2})`, `품목구분별 집행 금액 (${cat})`);
-    const info = D.cat_items[cat];
-    const rows = [[{ text: '품목', options: { bold: true, fill: { color: NAVY }, color: WHITE } }, { text: '수량', options: { bold: true, fill: { color: NAVY }, color: WHITE, align: 'right' } }, { text: '단가', options: { bold: true, fill: { color: NAVY }, color: WHITE, align: 'right' } }, { text: '금액', options: { bold: true, fill: { color: NAVY }, color: WHITE, align: 'right' } }]];
-    rows.push([{ text: '총합계', options: { bold: true } }, { text: '' }, { text: '' }, { text: pptFmt(info.total), options: { bold: true, align: 'right' } }]);
-    info.items.forEach((it) => { rows.push([{ text: it[0], options: { align: 'left' } }, { text: it[1] !== null ? pptFmt(it[1]) : '', options: { align: 'right' } }, { text: it[2] !== null ? pptFmt(it[2]) : '', options: { align: 'right' } }, { text: pptFmt(it[3]), options: { align: 'right' } }]); });
-    const catRowH = Math.min(0.3, 5.7 / rows.length);
-    slide.addTable(rows, { x: 0.5, y: 1.05, w: 7.3, colW: [3.6, 1.2, 1.2, 1.3], fontSize: rows.length > 15 ? 8.5 : 9.5, fontFace: 'Calibri', border: { type: 'solid', color: ICE_L, pt: 0.75 }, autoPage: false, rowH: catRowH });
-    const yoyVals = D.cat_yoy[cat].map((v) => Math.round((v / 1e8) * 100) / 100);
-    slide.addChart(pres.ChartType.bar, [{ name: cat, labels: D.periods, values: yoyVals }], { x: 8.1, y: 1.05, w: 4.7, h: 2.55, barDir: 'col', chartColors: periods.map((p, pi) => (pi === mainIdx ? GOLD : NAVY)), showTitle: true, title: `${cat} 연도별 추이 (억원)`, titleFontSize: 10, showValue: true, dataLabelFormatCode: '0.0', dataLabelFontSize: 8.5, dataLabelColor: NAVY, catAxisLabelFontSize: 8.5, valAxisHidden: true, valGridLine: { style: 'none' }, catGridLine: { style: 'none' }, showLegend: false });
-    const mixColors = D.cat_chart.map((d) => (d[0] === cat ? GOLD : ICE));
-    slide.addChart(pres.ChartType.bar, [{ name: '금액', labels: D.cat_chart.map((d) => d[0]), values: D.cat_chart.map((d) => Math.round((d[1] / 1e8) * 10) / 10) }], { x: 8.1, y: 3.75, w: 4.7, h: 3.0, barDir: 'bar', chartColors: mixColors, showTitle: true, title: `품목구분별 집행금액 (${D.mainPeriod} 전체 — 이 슬라이드: ${cat})`, titleFontSize: 9, showValue: false, catAxisLabelFontSize: 8, valAxisHidden: true, valGridLine: { style: 'none' }, catGridLine: { style: 'none' }, showLegend: false });
-  });
-  
-  // ---- 업체별 집행금액 (월별 세부) ----
-  {
-    const vendMonthlyTotal = D.month_cols.map((_, mi) => Object.values(D.monthly_vend).reduce((s, arr) => s + arr[mi], 0));
-    monthlyDetailSlide(`5-1)`, '업체별 집행 금액 (월별 세부)', '업체명', D.monthly_vend, vendMonthlyTotal);
-  }
-  
-  // ---- 업체별 상세 (top N) ----
-  D.vend_top_names.forEach((v, i) => {
-    const slide = contentSlide();
-    titleBlock(slide, `5-${i + 2})`, `업체별 집행 금액 (${v})`);
-    const info = D.vend_items[v];
-    slide.addText(`주요 품목구분: ${info.main_cat}`, { x: 0.5, y: 0.98, w: 7, h: 0.28, fontFace: 'Calibri', fontSize: 10, color: GRAY });
-    const rows = [[{ text: '품목', options: { bold: true, fill: { color: NAVY }, color: WHITE } }, { text: '수량', options: { bold: true, fill: { color: NAVY }, color: WHITE, align: 'right' } }, { text: '단가', options: { bold: true, fill: { color: NAVY }, color: WHITE, align: 'right' } }, { text: '금액', options: { bold: true, fill: { color: NAVY }, color: WHITE, align: 'right' } }]];
-    rows.push([{ text: '총합계', options: { bold: true } }, { text: '' }, { text: '' }, { text: pptFmt(info.total), options: { bold: true, align: 'right' } }]);
-    info.items.forEach((it) => { rows.push([{ text: it[0], options: { align: 'left' } }, { text: it[1] !== null ? pptFmt(it[1]) : '', options: { align: 'right' } }, { text: it[2] !== null ? pptFmt(it[2]) : '', options: { align: 'right' } }, { text: pptFmt(it[3]), options: { align: 'right' } }]); });
-    const vendRowH = Math.min(0.3, 5.4 / rows.length);
-    slide.addTable(rows, { x: 0.5, y: 1.35, w: 7.3, colW: [3.6, 1.2, 1.2, 1.3], fontSize: rows.length > 15 ? 8.5 : 9.5, fontFace: 'Calibri', border: { type: 'solid', color: ICE_L, pt: 0.75 }, autoPage: false, rowH: vendRowH });
-    const yoyVals = D.vend_yoy[v].map((x) => Math.round((x / 1e8) * 100) / 100);
-    slide.addChart(pres.ChartType.bar, [{ name: v, labels: D.periods, values: yoyVals }], { x: 8.1, y: 1.05, w: 4.7, h: 2.55, barDir: 'col', chartColors: periods.map((p, pi) => (pi === mainIdx ? GOLD : NAVY)), showTitle: true, title: `${v} 연도별 추이 (억원)`, titleFontSize: 10, showValue: true, dataLabelFormatCode: '0.0', dataLabelFontSize: 8.5, dataLabelColor: NAVY, catAxisLabelFontSize: 8.5, valAxisHidden: true, valGridLine: { style: 'none' }, catGridLine: { style: 'none' }, showLegend: false });
-    const mixColorsV = D.vend_chart.map((d) => (d[0] === v ? GOLD : ICE));
-    slide.addChart(pres.ChartType.bar, [{ name: '금액', labels: D.vend_chart.map((d) => d[0]), values: D.vend_chart.map((d) => Math.round((d[1] / 1e8) * 10) / 10) }], { x: 8.1, y: 3.75, w: 4.7, h: 3.0, barDir: 'bar', chartColors: mixColorsV, showTitle: true, title: `업체별 집행금액 (${D.mainPeriod} 전체 — 이 슬라이드: ${v})`, titleFontSize: 9, showValue: false, catAxisLabelFontSize: 8, valAxisHidden: true, valGridLine: { style: 'none' }, catGridLine: { style: 'none' }, showLegend: false });
-  });
-  
-  // ---- 계절성 ----
-  {
-    const slide = contentSlide();
-    titleBlock(slide, '6-1)', '추가 분석 — 월별 발주 패턴 (계절성)');
-    slide.addText(`→ ${D.mainPeriod} 기준 월별 총 집행금액입니다. 특정 월에 지출이 몰리는 패턴을 미리 파악해두면 예산·현금흐름 계획에 반영할 수 있습니다.`,
-                  { x: 0.5, y: 1.0, w: 12.3, h: 0.4, fontFace: 'Calibri', fontSize: 10.5, italic: true, color: GRAY });
-    const seasonScaled = D.seasonality.values.map((v) => Math.round((v / 1e8) * 100) / 100);
-    slide.addChart(pres.ChartType.bar, [{ name: '금액', labels: D.seasonality.labels, values: seasonScaled }], {
-      x: 0.5, y: 1.5, w: 7.6, h: 4.9, barDir: 'col',
-      chartColors: D.seasonality.labels.map((l) => (l === D.seasonality.peak_month ? GOLD : NAVY)),
-      showTitle: true, title: '월별 총 집행금액 (억원)', titleFontSize: 12,
-      showValue: true, dataLabelFormatCode: '0.0', dataLabelFontSize: 10, dataLabelColor: NAVY, dataLabelBold: true,
-      catAxisLabelFontSize: 10, valAxisHidden: true, valGridLine: { style: 'none' }, catGridLine: { style: 'none' }, showLegend: false,
-    });
-    slide.addShape(pres.ShapeType.roundRect, { x: 8.3, y: 1.5, w: 4.5, h: 1.5, rectRadius: 0.06, fill: { color: ICE_L }, line: { type: 'none' } });
-    slide.addShape(pres.ShapeType.rect, { x: 8.3, y: 1.5, w: 0.08, h: 1.5, fill: { color: GOLD }, line: { type: 'none' } });
-    slide.addText('최다 지출월', { x: 8.52, y: 1.62, w: 4.0, h: 0.3, fontFace: 'Calibri', fontSize: 10, color: GRAY });
-    slide.addText(D.seasonality.peak_month, { x: 8.52, y: 1.9, w: 4.0, h: 0.4, fontFace: 'Cambria', fontSize: 20, bold: true, color: NAVY });
-    slide.addText(`${pptFmt(D.seasonality.peak_amt)}원`, { x: 8.52, y: 2.35, w: 4.0, h: 0.3, fontFace: 'Calibri', fontSize: 11, color: TXT });
-    slide.addText('주요 품목: ' + (D.seasonality.peak_drivers.map((d) => `${d.name}(${pptEok(d.금액)})`).join(', ') || '-'), { x: 8.52, y: 2.65, w: 4.0, h: 0.3, fontFace: 'Calibri', fontSize: 9, color: GRAY });
-    analysisCard(slide, 8.3, 3.2, 4.5,
-                 `분석: ${D.seasonality.peak_month}에 지출이 집중되는 경향이 있어, 해당 시기 예산을 미리 확보하고 주요 품목(${D.seasonality.peak_drivers.map((d) => d.name).join('·') || '해당 월 주요 품목'} 등)의 발주를 앞당겨 검토하는 것을 권장합니다 (초안 — 담당자 확인 요망).`);
-  }
-  
-  // ---- 신규/이탈 거래업체 ----
-  {
-    const slide = contentSlide();
-    titleBlock(slide, '6-2)', '추가 분석 — 연도별 신규·이탈 거래업체');
-    const prevRangeLabel = periods.slice(0, mainIdx).join('~') || '이전 연도';
-    slide.addText(`→ 신규: ${D.mainPeriod}에 처음 등장한 업체. 이탈: ${prevRangeLabel}엔 거래했으나 ${D.mainPeriod}엔 거래 기록이 없는 업체(상위 금액 기준)입니다.`,
-                  { x: 0.5, y: 1.0, w: 12.3, h: 0.4, fontFace: 'Calibri', fontSize: 10.5, italic: true, color: GRAY });
-    slide.addText(`신규 거래업체 (총 ${D.new_vendor_count}곳 중 상위)`, { x: 0.5, y: 1.5, w: 6, h: 0.3, fontFace: 'Calibri', fontSize: 11, bold: true, color: NAVY });
-    const newRows = [[{ text: '업체명', options: { bold: true, fill: { color: NAVY }, color: WHITE } }, { text: `${D.mainPeriod} 금액`, options: { bold: true, fill: { color: NAVY }, color: WHITE, align: 'right' } }]];
-    D.new_vendors.forEach((v) => newRows.push([{ text: v.name, options: { align: 'left' } }, { text: pptFmt(v.금액), options: { align: 'right' } }]));
-    if (D.new_vendors.length === 0) newRows.push([{ text: '해당 없음', options: { align: 'left', color: GRAY } }, { text: '' }]);
-    slide.addTable(newRows, { x: 0.5, y: 1.82, w: 5.9, colW: [3.5, 2.4], fontSize: 9, fontFace: 'Calibri', border: { type: 'solid', color: ICE_L, pt: 0.75 }, autoPage: false, rowH: 0.32 });
-    slide.addText(`이탈 거래업체 (총 ${D.churned_vendor_count}곳 중 상위, ${prevRangeLabel} 거래액)`, { x: 6.7, y: 1.5, w: 6, h: 0.3, fontFace: 'Calibri', fontSize: 11, bold: true, color: NAVY });
-    const churnRows = [[{ text: '업체명', options: { bold: true, fill: { color: NAVY }, color: WHITE } }, { text: '과거 거래액', options: { bold: true, fill: { color: NAVY }, color: WHITE, align: 'right' } }]];
-    D.churned_vendors.forEach((v) => churnRows.push([{ text: v.name, options: { align: 'left' } }, { text: pptFmt(v.금액), options: { align: 'right' } }]));
-    if (D.churned_vendors.length === 0) churnRows.push([{ text: '해당 없음', options: { align: 'left', color: GRAY } }, { text: '' }]);
-    slide.addTable(churnRows, { x: 6.7, y: 1.82, w: 5.9, colW: [3.5, 2.4], fontSize: 9, fontFace: 'Calibri', border: { type: 'solid', color: ICE_L, pt: 0.75 }, autoPage: false, rowH: 0.32 });
-    analysisCard(slide, 0.5, 5.65, 12.3,
-                 '분석: 이탈 업체 중 금액 규모가 컸던 곳은 거래 중단 사유(가격/품질/계약 종료 등)를 확인해둘 필요가 있습니다. 신규 업체는 아직 거래 이력이 짧으므로 품질·납기 검증을 병행하는 것을 권장합니다 (초안 — 담당자 확인 요망).');
-  }
-  
-  return pres.write({ outputType: 'nodebuffer' });
+const NAVY = '1E2761', NAVY_D = '141B47', ICE = 'CADCFC', ICE_L = 'EAF0FC', WHITE = 'FFFFFF', GRAY = '6B7280', TXT = '232735', GOLD = 'C9A24B';
+const pres = new pptxgen();
+pres.layout = 'LAYOUT_WIDE';
+const PW = 13.33, PH = 7.5;
+let PAGE = 0;
+
+function footer(slide, pageNum) {
+slide.addText('㈜동훈 그룹 기획감사팀', { x: PW - 3.5, y: PH - 0.42, w: 3.3, h: 0.3, fontFace: 'Arial', fontSize: 9, color: GRAY, align: 'right' });
+slide.addText(String(pageNum), { x: 0.4, y: PH - 0.42, w: 0.6, h: 0.3, fontFace: 'Arial', fontSize: 9, color: GRAY, align: 'left' });
+}
+function contentSlide() {
+PAGE++;
+const slide = pres.addSlide();
+slide.background = { color: WHITE };
+footer(slide, PAGE);
+return slide;
+}
+function titleBlock(slide, tag, title) {
+slide.addText([{ text: tag + '  ', options: { color: NAVY, bold: true } }, { text: title, options: { color: TXT, bold: true } }],
+{ x: 0.5, y: 0.28, w: 11.5, h: 0.55, fontFace: 'Cambria', fontSize: 22 });
+slide.addShape(pres.ShapeType.line, { x: 0.5, y: 0.92, w: 12.33, h: 0, line: { color: ICE, width: 1.5 } });
+}
+function analysisCard(slide, x, y, w, text) {
+const maxBottom = 6.85;
+const h = Math.max(0.9, Math.min(1.5, maxBottom - y));
+slide.addShape(pres.ShapeType.roundRect, { x, y, w, h, rectRadius: 0.05, fill: { color: ICE_L }, line: { type: 'none' } });
+slide.addShape(pres.ShapeType.rect, { x, y, w: 0.06, h, fill: { color: GOLD }, line: { type: 'none' } });
+slide.addText(text, { x: x + 0.2, y: y + 0.12, w: w - 0.35, h: h - 0.24, fontFace: 'Calibri', fontSize: 8.5, color: TXT, valign: 'middle', lineSpacingMultiple: 1.15 });
+}
+function palette4(n) {
+const base = [NAVY, '3E5C9A', '7C93C7', '9DB3DE', 'C3D0EC', GOLD];
+const out = [];
+for (let i = 0; i < n; i++) out.push(i === n - 1 ? GOLD : base[i % (base.length - 1)]);
+return out;
+}
+
+const site = D.site;
+const periods = D.periods;
+const mainIdx = periods.indexOf(D.mainPeriod);
+const rangeLabel = periods.length > 1 ? `${periods[0]}~${D.mainPeriod} 연도별 추이 포함` : `${D.mainPeriod} 기준`;
+const todayStr = new Date().toLocaleDateString('ko-KR', { year: 'numeric', month: '2-digit', day: '2-digit' });
+
+// ---- 표지 ----
+{
+PAGE++;
+const slide = pres.addSlide();
+slide.background = { color: NAVY };
+slide.addShape(pres.ShapeType.ellipse, { x: 10.6, y: -1.6, w: 4.6, h: 4.6, fill: { color: NAVY_D }, line: { type: 'none' } });
+slide.addShape(pres.ShapeType.ellipse, { x: -1.4, y: 5.2, w: 3.6, h: 3.6, fill: { color: NAVY_D }, line: { type: 'none' } });
+slide.addText(`${site} 힐마루 – 구매 실적 보고`, { x: 0.9, y: 2.55, w: 11.5, h: 0.9, fontFace: 'Cambria', fontSize: 36, bold: true, color: WHITE });
+slide.addText(`${D.mainPeriod} 기준 (${rangeLabel})`, { x: 0.9, y: 3.35, w: 11.5, h: 0.5, fontFace: 'Calibri', fontSize: 18, color: ICE });
+slide.addShape(pres.ShapeType.line, { x: 0.95, y: 4.05, w: 3.2, h: 0, line: { color: GOLD, width: 2 } });
+slide.addText([
+{ text: `총 집행 금액 : ₩ ${pptFmt(D.total_amount)}`, options: { bold: true, breakLine: true } },
+{ text: `품목 구분별 비용 분석 (총 ${D.total_cat_count}개 품목구분 / 상위 ${D.cat_top_names.length}개 분석)`, options: { breakLine: true } },
+{ text: `업체별 비용 분석 (총 ${D.total_vend_count}개 업체 / 상위 ${D.vend_top_names.length}개 업체 분석)` },
+], { x: 0.95, y: 4.35, w: 10.5, h: 1.6, fontFace: 'Calibri', fontSize: 15, color: WHITE, lineSpacingMultiple: 1.35 });
+slide.addText(`${todayStr}  보고`, { x: 0.95, y: 6.55, w: 6, h: 0.4, fontFace: 'Calibri', fontSize: 12, color: ICE });
+slide.addText('㈜동훈 그룹 기획감사팀', { x: PW - 4.3, y: 6.9, w: 4, h: 0.35, fontFace: 'Arial', fontSize: 10, color: ICE, align: 'right' });
+}
+
+// ---- 목차 ----
+{
+const slide = contentSlide();
+slide.addText('목차', { x: 0.5, y: 0.5, w: 6, h: 0.7, fontFace: 'Cambria', fontSize: 30, bold: true, color: NAVY });
+const toc = [
+['1', '연도별 비교', '3'],
+['2', `${D.mainPeriod} 구매내역 (품목구분별 · 업체별, 연도별 총금액)`, '4'],
+['3', '구매전략 수립 예시', '6'],
+['4', '품목구분별 집행 금액', '9'],
+['5', '업체별 집행 금액', String(9 + 1 + D.cat_top_names.length)],
+['6', '추가 분석 (월별 계절성 · 신규·이탈 거래업체)', String(9 + 1 + D.cat_top_names.length + 1 + D.vend_top_names.length)],
+];
+let y = 1.75;
+toc.forEach((row) => {
+slide.addText(row[0], { x: 0.9, y, w: 0.5, h: 0.5, fontFace: 'Cambria', fontSize: 19, bold: true, color: GOLD });
+slide.addText(row[1], { x: 1.5, y, w: 9, h: 0.5, fontFace: 'Calibri', fontSize: 16, color: TXT });
+slide.addText(row[2], { x: 11.3, y, w: 1.2, h: 0.5, fontFace: 'Calibri', fontSize: 13, color: GRAY, align: 'right' });
+slide.addShape(pres.ShapeType.line, { x: 0.9, y: y + 0.52, w: 11.6, h: 0, line: { color: ICE_L, width: 1 } });
+y += 0.78;
+});
+}
+
+// ---- 연도별 비교 ----
+{
+const slide = contentSlide();
+titleBlock(slide, '1)', `연도별 비교 (${site}, 총 집행금액)`);
+const vals = periods.map((p) => Math.round((D.yoy[p] / 1e8) * 10) / 10);
+slide.addChart(pres.ChartType.bar, [{ name: '총 집행금액', labels: periods, values: vals }], {
+x: 0.6, y: 1.2, w: 7.6, h: 4.6, barDir: 'col',
+chartColors: periods.map((p, i) => (i === mainIdx ? GOLD : NAVY)),
+valAxisLabelFormatCode: '0.0',
+showTitle: true, title: `연도별 총 집행금액 (${site}, 단위: 억원)`, titleFontFace: 'Calibri', titleFontSize: 13,
+showValue: true, dataLabelFormatCode: '0.0', dataLabelPosition: 'outEnd', dataLabelFontSize: 11, dataLabelColor: NAVY, dataLabelBold: true,
+catAxisLabelFontSize: 11, valAxisLabelFontSize: 9,
+valGridLine: { color: ICE_L, size: 1 }, catGridLine: { style: 'none' }, showLegend: false,
+});
+const colW = [0.85, ...periods.map(() => 3.5 / periods.length)];
+slide.addTable([
+['연도', ...periods].map((h, i) => ({ text: h, options: { bold: true, fill: { color: NAVY }, color: WHITE, align: i === 0 ? 'left' : 'right' } })),
+['총 공급가', ...periods.map((p) => ({ text: pptFmt(D.yoy[p]), options: { align: 'right' } }))],
+], { x: 8.5, y: 1.3, w: 4.35, colW, fontSize: 8, fontFace: 'Calibri', border: { type: 'solid', color: ICE_L, pt: 0.75 }, autoPage: false, margin: [2, 3, 2, 3] });
+slide.addText('※ 선택하신 기간 조건에 따라 연도별 집계 범위가 다를 수 있습니다. 정확한 증감률 비교보다는 추세 참고용으로 확인해 주세요.',
+{ x: 8.5, y: 2.35, w: 4.35, h: 1.0, fontFace: 'Calibri', fontSize: 9.5, italic: true, color: GRAY });
+const prevP = mainIdx > 0 ? periods[mainIdx - 1] : null;
+const trendTxt = prevP
+? (() => { const cur = D.yoy[D.mainPeriod], prev = D.yoy[prevP]; const diffPct = prev ? Math.round(((cur - prev) / prev) * 1000) / 10 : 0;
+return `분석: ${D.mainPeriod} 총 집행금액은 ₩${pptFmt(cur)}로, 직전 연도(${prevP}) 대비 ${diffPct >= 0 ? '+' : ''}${diffPct}% ${diffPct >= 0 ? '증가' : '감소'}했습니다.`; })()
+: `분석: ${D.mainPeriod} 총 집행금액은 ₩${pptFmt(D.yoy[D.mainPeriod])}입니다. 비교 가능한 이전 연도 데이터가 없습니다.`;
+analysisCard(slide, 8.5, 4.3, 4.35, trendTxt);
+}
+
+// ---- overviewSlide (품목구분/업체별 연도 추이) ----
+function overviewSlide(tag, title, names, yoyMap) {
+const slide = contentSlide();
+titleBlock(slide, tag, title);
+const palette = palette4(periods.length);
+const chartSeries = periods.map((p, i) => ({ name: p, labels: names, values: names.map((n) => yoyMap[n][i]) }));
+slide.addChart(pres.ChartType.bar, chartSeries, {
+x: 0.5, y: 1.15, w: 7.6, h: 5.15, barDir: 'col', barGrouping: 'clustered',
+chartColors: palette, showTitle: false, showValue: true,
+dataLabelFormatCode: '#,##0,,"억"', dataLabelPosition: 'outEnd', dataLabelFontSize: 7.5, dataLabelColor: TXT,
+catAxisLabelFontSize: 9.5, valAxisHidden: true,
+valGridLine: { style: 'none' }, catGridLine: { style: 'none' }, showLegend: true, legendPos: 'b', legendFontSize: 9,
+});
+const colW2 = [1.3, ...periods.map(() => 3.2 / periods.length)];
+const header = ['구분', ...periods].map((h, i) => ({ text: h, options: { bold: true, fill: { color: NAVY }, color: WHITE, align: i === 0 ? 'left' : 'right', fontSize: 8 } }));
+const rows = [header];
+names.forEach((n) => { rows.push([{ text: n, options: { align: 'left', fontSize: 8 } }, ...yoyMap[n].map((v) => ({ text: pptFmt(v), options: { align: 'right', fontSize: 8 } }))]); });
+slide.addTable(rows, { x: 8.3, y: 1.15, w: 4.5, colW: colW2, fontSize: 8, fontFace: 'Calibri', border: { type: 'solid', color: ICE_L, pt: 0.75 }, autoPage: false, rowH: 0.34, margin: [2, 3, 2, 3] });
+const footnoteY = 1.15 + rows.length * 0.34 + 0.15;
+slide.addText('※ 연도별 집계 범위가 다를 수 있어 직접 비교보다는 추세 참고용으로 봐주세요. 0으로 표시된 구간은 해당 기간 신규 발주 기록이 없었던 경우입니다.',
+{ x: 8.3, y: footnoteY, w: 4.5, h: 1.0, fontFace: 'Calibri', fontSize: 8.5, italic: true, color: GRAY });
+slide.analysisY = footnoteY + 1.05;
+return slide;
+}
+
+{
+const slide = overviewSlide('2-1)', `주요 품목구분 연도별 총금액 (${site})`, D.cat_top_names, D.cat_yoy);
+const topPct = D.total_amount ? Math.round((D.cat_chart.slice(0, D.cat_top_names.length).reduce((s, d) => s + d[1], 0) / D.total_amount) * 100) : 0;
+analysisCard(slide, 8.3, slide.analysisY, 4.5,
+`분석: 상위 ${D.cat_top_names.length}개 품목구분(${D.cat_top_names.join('·')})이 ${D.mainPeriod} 전체의 약 ${topPct}%를 차지. 연도별로도 꾸준히 지출 상위권을 유지하고 있다면 연간 계약/단가표 도입 검토 필요 (초안 — 담당자 확인 요망).`);
+}
+{
+const slide = overviewSlide('2-2)', `주요 업체 연도별 총금액 (${site})`, D.vend_top_names, D.vend_yoy);
+const topPct = D.total_amount ? Math.round((D.vend_chart.slice(0, D.vend_top_names.length).reduce((s, d) => s + d[1], 0) / D.total_amount) * 100) : 0;
+analysisCard(slide, 8.3, slide.analysisY, 4.5,
+`분석: 총 ${D.total_vend_count}개 업체 중 상위 ${D.vend_top_names.length}개사가 ${D.mainPeriod} 전체의 약 ${topPct}%. 업체별로 연도에 따라 거래 규모 변동이 있다면 상위 업체 중심 연간 단가/납기 계약 체결 여지 검토 필요 (초안 — 담당자 확인 요망).`);
+}
+
+// ---- 매트릭스 (지출액 x 발주빈도) ----
+function matrixSlide(tag, title, axisXLabel, axisYLabel, axisXHint, axisYHint, data, quadMeta, fmtFn) {
+const slide = contentSlide();
+titleBlock(slide, tag, title);
+slide.addText('→ 데이터 기반 자동 배치(초안): X축은 실제 지출/단가 데이터, Y축은 ' + axisYLabel + ' 데이터를 대리 지표로 사용한 결과입니다. 실제 긴급성·관리우선순위 판단은 담당자 검토가 필요합니다.',
+{ x: 0.5, y: 1.0, w: 12.3, h: 0.38, fontFace: 'Calibri', fontSize: 10, italic: true, color: GRAY });
+const gridX = 0.5, gridY = 1.55, gridW = 12.3, gridH = 5.55, gap = 0.22;
+const cardW = (gridW - gap) / 2, cardH = (gridH - gap) / 2;
+const quads = [{ k: 'A', x: gridX, y: gridY }, { k: 'B', x: gridX + cardW + gap, y: gridY }, { k: 'C', x: gridX, y: gridY + cardH + gap }, { k: 'D', x: gridX + cardW + gap, y: gridY + cardH + gap }];
+quads.forEach((q) => {
+const meta = quadMeta[q.k];
+const items = data.filter((d) => d.quad === q.k);
+slide.addShape(pres.ShapeType.roundRect, { x: q.x, y: q.y, w: cardW, h: cardH, rectRadius: 0.06, fill: { color: ICE_L }, line: { color: ICE, width: 1 } });
+slide.addShape(pres.ShapeType.rect, { x: q.x, y: q.y, w: 0.08, h: cardH, fill: { color: NAVY }, line: { type: 'none' } });
+slide.addShape(pres.ShapeType.ellipse, { x: q.x + 0.22, y: q.y + 0.16, w: 0.36, h: 0.36, fill: { color: NAVY }, line: { type: 'none' } });
+slide.addText(q.k, { x: q.x + 0.22, y: q.y + 0.16, w: 0.36, h: 0.36, fontFace: 'Cambria', fontSize: 13, bold: true, color: WHITE, align: 'center', valign: 'middle' });
+slide.addText(meta.label, { x: q.x + 0.7, y: q.y + 0.16, w: cardW - 0.94, h: 0.36, fontFace: 'Calibri', fontSize: 11, bold: true, color: NAVY, valign: 'middle' });
+const stratH = 0.72;
+slide.addText(meta.strategy, { x: q.x + 0.22, y: q.y + 0.58, w: cardW - 0.44, h: stratH, fontFace: 'Calibri', fontSize: 8.5, color: TXT, lineSpacingMultiple: 1.12 });
+const dividerY = q.y + 0.58 + stratH + 0.06;
+slide.addShape(pres.ShapeType.line, { x: q.x + 0.22, y: dividerY, w: cardW - 0.44, h: 0, line: { color: ICE, width: 0.75 } });
+const listY = dividerY + 0.1;
+const listH = q.y + cardH - 0.1 - listY;
+const lineH = Math.min(0.32, listH / Math.max(items.length, 1));
+items.forEach((d, i) => {
+const iy = listY + i * lineH;
+slide.addShape(pres.ShapeType.ellipse, { x: q.x + 0.24, y: iy + lineH / 2 - 0.035, w: 0.07, h: 0.07, fill: { color: GOLD }, line: { type: 'none' } });
+slide.addText([{ text: d.name, options: { bold: true, color: NAVY } }, { text: `   ${fmtFn(d)}`, options: { color: GRAY } }],
+{ x: q.x + 0.4, y: iy, w: cardW - 0.6, h: lineH, fontFace: 'Calibri', fontSize: 9, valign: 'middle' });
+});
+if (items.length === 0) slide.addText('해당 없음', { x: q.x + 0.4, y: listY, w: cardW - 0.6, h: 0.3, fontFace: 'Calibri', fontSize: 9, color: GRAY, italic: true });
+});
+slide.addText(`X축 지표: ${axisXLabel}${axisXHint ? ' (' + axisXHint + ')' : ''}`, { x: gridX, y: gridY + gridH + 0.12, w: gridW, h: 0.32, fontFace: 'Calibri', fontSize: 11.5, align: 'center', color: NAVY, bold: true });
+slide.addText(`Y축 지표: ${axisYLabel}${axisYHint ? ' (' + axisYHint + ')' : ''}`, { x: gridX, y: 1.18, w: gridW, h: 0.3, fontFace: 'Calibri', fontSize: 10, color: NAVY, bold: true, align: 'right' });
+}
+const quadMeta1 = {
+A: { label: '지출액 ↑ · 발주빈도 ↑', strategy: '전략: 연간 계약·단가표 작성으로 구매 프로세스 간소화, 계획구매 강화(재고관리 → 사용계획 → 발주횟수/수량/단가 개선)' },
+B: { label: '지출액 ↑ · 발주빈도 ↓', strategy: '전략: 가격 적절성 검토 강화 — 스펙/대체품 검토 및 업체 경쟁 유도' },
+C: { label: '지출액 ↓ · 발주빈도 ↑', strategy: '전략: 사용계획 및 재고관리 강화 → 발주횟수 감소, 발주당 수량 증대' },
+D: { label: '지출액 ↓ · 발주빈도 ↓', strategy: '전략: 업무 효율 증가 방안 검토 (발주 횟수·관리 방식 등)' },
+};
+matrixSlide('3-1)', '구매전략 수립 예시 — 지출액 × 발주빈도', '총 지출액', '발주 빈도(건수)', `${D.mainPeriod} 공급가 합계`, `${D.mainPeriod} 발주 건수`, D.matrix1, quadMeta1, (d) => `${pptEok(d.금액)} · ${d.건수}건`);
+
+// ---- ABC 분석 ----
+{
+const slide = contentSlide();
+titleBlock(slide, '3-2)', '구매전략 수립 예시 ② — ABC 분석 (파레토)');
+slide.addText('→ 품목구분을 금액 누적 비중 기준으로 A(상위 70%) · B(70~90%) · C(90~100%) 등급으로 분류했습니다. 등급별로 관리 강도를 다르게 가져가는 것이 효율적입니다.',
+{ x: 0.5, y: 1.0, w: 12.3, h: 0.4, fontFace: 'Calibri', fontSize: 10, italic: true, color: GRAY });
+const gradeMeta = { A: { color: NAVY, desc: '핵심 관리 대상 — 개별 협상, 연간 계약, 정기 시장가 모니터링' }, B: { color: '3E5C9A', desc: '표준 프로세스 — 분기 단위 가격 점검, 복수 견적 유지' }, C: { color: ICE, desc: '간소화 대상 — 자동발주/카드결제 등 관리 비용 최소화' } };
+let cardX = 0.5;
+const cardW3 = 3.95, cardGap = 0.22;
+['A', 'B', 'C'].forEach((g) => {
+const s = D.abc_summary[g];
+slide.addShape(pres.ShapeType.roundRect, { x: cardX, y: 1.55, w: cardW3, h: 1.5, rectRadius: 0.06, fill: { color: ICE_L }, line: { color: ICE, width: 1 } });
+slide.addShape(pres.ShapeType.rect, { x: cardX, y: 1.55, w: 0.08, h: 1.5, fill: { color: gradeMeta[g].color === ICE ? GOLD : gradeMeta[g].color }, line: { type: 'none' } });
+slide.addText(`${g} 등급`, { x: cardX + 0.22, y: 1.65, w: cardW3 - 0.4, h: 0.35, fontFace: 'Cambria', fontSize: 15, bold: true, color: NAVY });
+slide.addText(`${s.count}개 품목구분 · ${s.pct_of_all}%`, { x: cardX + 0.22, y: 2.0, w: cardW3 - 0.4, h: 0.3, fontFace: 'Calibri', fontSize: 11, bold: true, color: GRAY });
+slide.addText(`${pptFmt(s.total)}원`, { x: cardX + 0.22, y: 2.28, w: cardW3 - 0.4, h: 0.3, fontFace: 'Calibri', fontSize: 11, color: TXT });
+slide.addText(gradeMeta[g].desc, { x: cardX + 0.22, y: 2.58, w: cardW3 - 0.4, h: 0.45, fontFace: 'Calibri', fontSize: 8, color: GRAY, lineSpacingMultiple: 1.1 });
+cardX += cardW3 + cardGap;
+});
+const gradeCols = [{ g: 'A', x: 0.5, label: 'A등급 품목구분 (전체)' }, { g: 'B', x: 4.55, label: 'B등급 품목구분 (상위 5개)' }, { g: 'C', x: 8.6, label: 'C등급 품목구분 (상위 5개)' }];
+gradeCols.forEach((gc) => {
+slide.addText(gc.label, { x: gc.x, y: 3.3, w: 3.85, h: 0.28, fontFace: 'Calibri', fontSize: 10.5, bold: true, color: NAVY });
+const gRows = [[{ text: '품목구분', options: { bold: true, fill: { color: NAVY }, color: WHITE, fontSize: 8.5 } }, { text: '금액', options: { bold: true, fill: { color: NAVY }, color: WHITE, align: 'right', fontSize: 8.5 } }, { text: '누적%', options: { bold: true, fill: { color: NAVY }, color: WHITE, align: 'right', fontSize: 8.5 } }]];
+D.abc_items[gc.g].slice(0, 5).forEach((x) => { gRows.push([{ text: x.name, options: { align: 'left' } }, { text: pptFmt(x.금액), options: { align: 'right' } }, { text: `${x.pct}%`, options: { align: 'right', color: GRAY } }]); });
+slide.addTable(gRows, { x: gc.x, y: 3.62, w: 3.85, colW: [1.85, 1.3, 0.7], fontSize: 8.5, fontFace: 'Calibri', border: { type: 'solid', color: ICE_L, pt: 0.75 }, autoPage: false, rowH: 0.3 });
+if (D.abc_items[gc.g].length > 5) slide.addText(`외 ${D.abc_items[gc.g].length - 5}개 품목구분`, { x: gc.x, y: 3.62 + gRows.length * 0.3 + 0.06, w: 3.85, h: 0.25, fontFace: 'Calibri', fontSize: 8, italic: true, color: GRAY });
+});
+analysisCard(slide, 0.5, 5.85, 12.3,
+`분석: 상위 ${D.abc_summary.A.count}개 품목구분(A등급)이 전체 지출의 ${D.abc_summary.A.pct_of_all}%를 차지합니다. 이 품목들에 구매 담당자의 협상·모니터링 역량을 집중하고, C등급(${D.abc_summary.C.count}개, ${D.abc_summary.C.pct_of_all}%)은 발주 프로세스를 간소화해 행정 부담을 줄이는 것을 권장합니다 (초안 — 담당자 확인 요망).`);
+}
+
+// ---- 정기계약 전환 후보 ----
+{
+const slide = contentSlide();
+titleBlock(slide, '3-3)', '구매전략 수립 예시 ③ — 정기계약 전환 후보');
+slide.addText(`→ ${D.mainPeriod} 발주 건수가 많은(5건 이상) 업체입니다. 반복 발주가 잦은 업체는 건별 협상 대신 연간 단가계약(블랭킷 오더)으로 전환하면 행정 비용을 줄이고 단가도 안정시킬 수 있습니다.`,
+{ x: 0.5, y: 1.0, w: 12.3, h: 0.55, fontFace: 'Calibri', fontSize: 10.5, italic: true, color: GRAY });
+const rows = [[{ text: '업체명', options: { bold: true, fill: { color: NAVY }, color: WHITE } }, { text: '주요 품목구분', options: { bold: true, fill: { color: NAVY }, color: WHITE } }, { text: `${D.mainPeriod} 발주건수`, options: { bold: true, fill: { color: NAVY }, color: WHITE, align: 'right' } }, { text: `${D.mainPeriod} 금액`, options: { bold: true, fill: { color: NAVY }, color: WHITE, align: 'right' } }]];
+if (D.blanket_candidates.length === 0) {
+rows.push([{ text: '해당 없음 (5건 이상 발주 업체 없음)', options: { align: 'left', color: GRAY } }, { text: '' }, { text: '' }, { text: '' }]);
+} else {
+D.blanket_candidates.forEach((b) => { rows.push([{ text: b.name, options: { align: 'left', bold: true } }, { text: b.주요품목, options: { align: 'left', color: GRAY } }, { text: `${b.건수}건`, options: { align: 'right' } }, { text: pptFmt(b.금액), options: { align: 'right' } }]); });
+}
+slide.addTable(rows, { x: 0.5, y: 1.75, w: 9.2, colW: [2.1, 2.3, 1.8, 2.0], fontSize: 10, fontFace: 'Calibri', border: { type: 'solid', color: ICE_L, pt: 0.75 }, autoPage: false, rowH: 0.42 });
+analysisCard(slide, 9.9, 1.75, 2.9,
+'전략: 발주 건수가 많을수록 건당 행정 비용(품의·검수·정산)이 누적됩니다. 상위 업체부터 연간 단가계약을 맺어 발주는 자동화하고, 담당자는 예외 상황 관리에 집중하는 방향을 권장합니다 (초안 — 담당자 확인 요망).');
+}
+
+// ---- 품목구분별 집행금액 (월별 세부) ----
+function monthlyDetailSlide(tag, title, label, monthlyMap, monthlyTotalArr) {
+const slide = contentSlide();
+titleBlock(slide, tag, title);
+const months = D.month_cols;
+const labelW = 2.3, totalW = 1.5;
+const perMonthW = months.length ? (12.3 - labelW - totalW) / months.length : 0;
+const colW = [labelW, ...months.map(() => perMonthW), totalW];
+const header = ['구분', ...months, '총합계'].map((h) => ({ text: h, options: { bold: true, fill: { color: NAVY }, color: WHITE, align: h === '구분' ? 'left' : 'right', fontSize: months.length > 8 ? 7.5 : 9 } }));
+const rows = [header];
+rows.push([{ text: '총합계', options: { bold: true, align: 'left' } }, ...monthlyTotalArr.map((v) => ({ text: pptFmt(v), options: { bold: true, align: 'right' } })), { text: pptFmt(D.total_amount), options: { bold: true, align: 'right' } }]);
+Object.keys(monthlyMap).forEach((key) => {
+const vals = monthlyMap[key];
+const sum = vals.reduce((a, b) => a + b, 0);
+rows.push([{ text: key, options: { align: 'left', bold: key === '그 외' } }, ...vals.map((v) => ({ text: v ? pptFmt(v) : '', options: { align: 'right' } })), { text: pptFmt(sum), options: { align: 'right' } }]);
+});
+slide.addTable(rows, { x: 0.5, y: 1.15, w: 12.3, colW, fontSize: months.length > 8 ? 7.5 : 8.5, fontFace: 'Calibri', border: { type: 'solid', color: ICE_L, pt: 0.75 }, autoPage: false, rowH: 0.29 });
+if (D.month_cols.some((m) => m.startsWith('기타'))) {
+slide.addText(`※ '기타'는 ${D.mainPeriod} 조회 기간 범위 밖 발주일자 건입니다.`, { x: 0.5, y: 1.15 + rows.length * 0.29 + 0.08, w: 6, h: 0.25, fontFace: 'Calibri', fontSize: 8, italic: true, color: GRAY });
+}
+}
+monthlyDetailSlide('4-1)', '품목구분별 집행 금액 (월별 세부)', '구분', D.monthly_cat, D.monthly_cat_total);
+
+// ---- 품목구분별 상세 (top N) ----
+D.cat_top_names.forEach((cat, i) => {
+const slide = contentSlide();
+titleBlock(slide, `4-${i + 2})`, `품목구분별 집행 금액 (${cat})`);
+const info = D.cat_items[cat];
+const rows = [[{ text: '품목', options: { bold: true, fill: { color: NAVY }, color: WHITE } }, { text: '수량', options: { bold: true, fill: { color: NAVY }, color: WHITE, align: 'right' } }, { text: '단가', options: { bold: true, fill: { color: NAVY }, color: WHITE, align: 'right' } }, { text: '금액', options: { bold: true, fill: { color: NAVY }, color: WHITE, align: 'right' } }]];
+rows.push([{ text: '총합계', options: { bold: true } }, { text: '' }, { text: '' }, { text: pptFmt(info.total), options: { bold: true, align: 'right' } }]);
+info.items.forEach((it) => { rows.push([{ text: it[0], options: { align: 'left' } }, { text: it[1] !== null ? pptFmt(it[1]) : '', options: { align: 'right' } }, { text: it[2] !== null ? pptFmt(it[2]) : '', options: { align: 'right' } }, { text: pptFmt(it[3]), options: { align: 'right' } }]); });
+const catRowH = Math.min(0.3, 5.7 / rows.length);
+slide.addTable(rows, { x: 0.5, y: 1.05, w: 7.3, colW: [3.6, 1.2, 1.2, 1.3], fontSize: rows.length > 15 ? 8.5 : 9.5, fontFace: 'Calibri', border: { type: 'solid', color: ICE_L, pt: 0.75 }, autoPage: false, rowH: catRowH });
+const yoyVals = D.cat_yoy[cat].map((v) => Math.round((v / 1e8) * 100) / 100);
+slide.addChart(pres.ChartType.bar, [{ name: cat, labels: D.periods, values: yoyVals }], { x: 8.1, y: 1.05, w: 4.7, h: 2.55, barDir: 'col', chartColors: periods.map((p, pi) => (pi === mainIdx ? GOLD : NAVY)), showTitle: true, title: `${cat} 연도별 추이 (억원)`, titleFontSize: 10, showValue: true, dataLabelFormatCode: '0.0', dataLabelFontSize: 8.5, dataLabelColor: NAVY, catAxisLabelFontSize: 8.5, valAxisHidden: true, valGridLine: { style: 'none' }, catGridLine: { style: 'none' }, showLegend: false });
+const mixColors = D.cat_chart.map((d) => (d[0] === cat ? GOLD : ICE));
+slide.addChart(pres.ChartType.bar, [{ name: '금액', labels: D.cat_chart.map((d) => d[0]), values: D.cat_chart.map((d) => Math.round((d[1] / 1e8) * 10) / 10) }], { x: 8.1, y: 3.75, w: 4.7, h: 3.0, barDir: 'bar', chartColors: mixColors, showTitle: true, title: `품목구분별 집행금액 (${D.mainPeriod} 전체 — 이 슬라이드: ${cat})`, titleFontSize: 9, showValue: false, catAxisLabelFontSize: 8, valAxisHidden: true, valGridLine: { style: 'none' }, catGridLine: { style: 'none' }, showLegend: false });
+});
+
+// ---- 업체별 집행금액 (월별 세부) ----
+{
+const vendMonthlyTotal = D.month_cols.map((_, mi) => Object.values(D.monthly_vend).reduce((s, arr) => s + arr[mi], 0));
+monthlyDetailSlide(`5-1)`, '업체별 집행 금액 (월별 세부)', '업체명', D.monthly_vend, vendMonthlyTotal);
+}
+
+// ---- 업체별 상세 (top N) ----
+D.vend_top_names.forEach((v, i) => {
+const slide = contentSlide();
+titleBlock(slide, `5-${i + 2})`, `업체별 집행 금액 (${v})`);
+const info = D.vend_items[v];
+slide.addText(`주요 품목구분: ${info.main_cat}`, { x: 0.5, y: 0.98, w: 7, h: 0.28, fontFace: 'Calibri', fontSize: 10, color: GRAY });
+const rows = [[{ text: '품목', options: { bold: true, fill: { color: NAVY }, color: WHITE } }, { text: '수량', options: { bold: true, fill: { color: NAVY }, color: WHITE, align: 'right' } }, { text: '단가', options: { bold: true, fill: { color: NAVY }, color: WHITE, align: 'right' } }, { text: '금액', options: { bold: true, fill: { color: NAVY }, color: WHITE, align: 'right' } }]];
+rows.push([{ text: '총합계', options: { bold: true } }, { text: '' }, { text: '' }, { text: pptFmt(info.total), options: { bold: true, align: 'right' } }]);
+info.items.forEach((it) => { rows.push([{ text: it[0], options: { align: 'left' } }, { text: it[1] !== null ? pptFmt(it[1]) : '', options: { align: 'right' } }, { text: it[2] !== null ? pptFmt(it[2]) : '', options: { align: 'right' } }, { text: pptFmt(it[3]), options: { align: 'right' } }]); });
+const vendRowH = Math.min(0.3, 5.4 / rows.length);
+slide.addTable(rows, { x: 0.5, y: 1.35, w: 7.3, colW: [3.6, 1.2, 1.2, 1.3], fontSize: rows.length > 15 ? 8.5 : 9.5, fontFace: 'Calibri', border: { type: 'solid', color: ICE_L, pt: 0.75 }, autoPage: false, rowH: vendRowH });
+const yoyVals = D.vend_yoy[v].map((x) => Math.round((x / 1e8) * 100) / 100);
+slide.addChart(pres.ChartType.bar, [{ name: v, labels: D.periods, values: yoyVals }], { x: 8.1, y: 1.05, w: 4.7, h: 2.55, barDir: 'col', chartColors: periods.map((p, pi) => (pi === mainIdx ? GOLD : NAVY)), showTitle: true, title: `${v} 연도별 추이 (억원)`, titleFontSize: 10, showValue: true, dataLabelFormatCode: '0.0', dataLabelFontSize: 8.5, dataLabelColor: NAVY, catAxisLabelFontSize: 8.5, valAxisHidden: true, valGridLine: { style: 'none' }, catGridLine: { style: 'none' }, showLegend: false });
+const mixColorsV = D.vend_chart.map((d) => (d[0] === v ? GOLD : ICE));
+slide.addChart(pres.ChartType.bar, [{ name: '금액', labels: D.vend_chart.map((d) => d[0]), values: D.vend_chart.map((d) => Math.round((d[1] / 1e8) * 10) / 10) }], { x: 8.1, y: 3.75, w: 4.7, h: 3.0, barDir: 'bar', chartColors: mixColorsV, showTitle: true, title: `업체별 집행금액 (${D.mainPeriod} 전체 — 이 슬라이드: ${v})`, titleFontSize: 9, showValue: false, catAxisLabelFontSize: 8, valAxisHidden: true, valGridLine: { style: 'none' }, catGridLine: { style: 'none' }, showLegend: false });
+});
+
+// ---- 계절성 ----
+{
+const slide = contentSlide();
+titleBlock(slide, '6-1)', '추가 분석 — 월별 발주 패턴 (계절성)');
+slide.addText(`→ ${D.mainPeriod} 기준 월별 총 집행금액입니다. 특정 월에 지출이 몰리는 패턴을 미리 파악해두면 예산·현금흐름 계획에 반영할 수 있습니다.`,
+{ x: 0.5, y: 1.0, w: 12.3, h: 0.4, fontFace: 'Calibri', fontSize: 10.5, italic: true, color: GRAY });
+const seasonScaled = D.seasonality.values.map((v) => Math.round((v / 1e8) * 100) / 100);
+slide.addChart(pres.ChartType.bar, [{ name: '금액', labels: D.seasonality.labels, values: seasonScaled }], {
+x: 0.5, y: 1.5, w: 7.6, h: 4.9, barDir: 'col',
+chartColors: D.seasonality.labels.map((l) => (l === D.seasonality.peak_month ? GOLD : NAVY)),
+showTitle: true, title: '월별 총 집행금액 (억원)', titleFontSize: 12,
+showValue: true, dataLabelFormatCode: '0.0', dataLabelFontSize: 10, dataLabelColor: NAVY, dataLabelBold: true,
+catAxisLabelFontSize: 10, valAxisHidden: true, valGridLine: { style: 'none' }, catGridLine: { style: 'none' }, showLegend: false,
+});
+slide.addShape(pres.ShapeType.roundRect, { x: 8.3, y: 1.5, w: 4.5, h: 1.5, rectRadius: 0.06, fill: { color: ICE_L }, line: { type: 'none' } });
+slide.addShape(pres.ShapeType.rect, { x: 8.3, y: 1.5, w: 0.08, h: 1.5, fill: { color: GOLD }, line: { type: 'none' } });
+slide.addText('최다 지출월', { x: 8.52, y: 1.62, w: 4.0, h: 0.3, fontFace: 'Calibri', fontSize: 10, color: GRAY });
+slide.addText(D.seasonality.peak_month, { x: 8.52, y: 1.9, w: 4.0, h: 0.4, fontFace: 'Cambria', fontSize: 20, bold: true, color: NAVY });
+slide.addText(`${pptFmt(D.seasonality.peak_amt)}원`, { x: 8.52, y: 2.35, w: 4.0, h: 0.3, fontFace: 'Calibri', fontSize: 11, color: TXT });
+slide.addText('주요 품목: ' + (D.seasonality.peak_drivers.map((d) => `${d.name}(${pptEok(d.금액)})`).join(', ') || '-'), { x: 8.52, y: 2.65, w: 4.0, h: 0.3, fontFace: 'Calibri', fontSize: 9, color: GRAY });
+analysisCard(slide, 8.3, 3.2, 4.5,
+`분석: ${D.seasonality.peak_month}에 지출이 집중되는 경향이 있어, 해당 시기 예산을 미리 확보하고 주요 품목(${D.seasonality.peak_drivers.map((d) => d.name).join('·') || '해당 월 주요 품목'} 등)의 발주를 앞당겨 검토하는 것을 권장합니다 (초안 — 담당자 확인 요망).`);
+}
+
+// ---- 신규/이탈 거래업체 ----
+{
+const slide = contentSlide();
+titleBlock(slide, '6-2)', '추가 분석 — 연도별 신규·이탈 거래업체');
+const prevRangeLabel = periods.slice(0, mainIdx).join('~') || '이전 연도';
+slide.addText(`→ 신규: ${D.mainPeriod}에 처음 등장한 업체. 이탈: ${prevRangeLabel}엔 거래했으나 ${D.mainPeriod}엔 거래 기록이 없는 업체(상위 금액 기준)입니다.`,
+{ x: 0.5, y: 1.0, w: 12.3, h: 0.4, fontFace: 'Calibri', fontSize: 10.5, italic: true, color: GRAY });
+slide.addText(`신규 거래업체 (총 ${D.new_vendor_count}곳 중 상위)`, { x: 0.5, y: 1.5, w: 6, h: 0.3, fontFace: 'Calibri', fontSize: 11, bold: true, color: NAVY });
+const newRows = [[{ text: '업체명', options: { bold: true, fill: { color: NAVY }, color: WHITE } }, { text: `${D.mainPeriod} 금액`, options: { bold: true, fill: { color: NAVY }, color: WHITE, align: 'right' } }]];
+D.new_vendors.forEach((v) => newRows.push([{ text: v.name, options: { align: 'left' } }, { text: pptFmt(v.금액), options: { align: 'right' } }]));
+if (D.new_vendors.length === 0) newRows.push([{ text: '해당 없음', options: { align: 'left', color: GRAY } }, { text: '' }]);
+slide.addTable(newRows, { x: 0.5, y: 1.82, w: 5.9, colW: [3.5, 2.4], fontSize: 9, fontFace: 'Calibri', border: { type: 'solid', color: ICE_L, pt: 0.75 }, autoPage: false, rowH: 0.32 });
+slide.addText(`이탈 거래업체 (총 ${D.churned_vendor_count}곳 중 상위, ${prevRangeLabel} 거래액)`, { x: 6.7, y: 1.5, w: 6, h: 0.3, fontFace: 'Calibri', fontSize: 11, bold: true, color: NAVY });
+const churnRows = [[{ text: '업체명', options: { bold: true, fill: { color: NAVY }, color: WHITE } }, { text: '과거 거래액', options: { bold: true, fill: { color: NAVY }, color: WHITE, align: 'right' } }]];
+D.churned_vendors.forEach((v) => churnRows.push([{ text: v.name, options: { align: 'left' } }, { text: pptFmt(v.금액), options: { align: 'right' } }]));
+if (D.churned_vendors.length === 0) churnRows.push([{ text: '해당 없음', options: { align: 'left', color: GRAY } }, { text: '' }]);
+slide.addTable(churnRows, { x: 6.7, y: 1.82, w: 5.9, colW: [3.5, 2.4], fontSize: 9, fontFace: 'Calibri', border: { type: 'solid', color: ICE_L, pt: 0.75 }, autoPage: false, rowH: 0.32 });
+analysisCard(slide, 0.5, 5.65, 12.3,
+'분석: 이탈 업체 중 금액 규모가 컸던 곳은 거래 중단 사유(가격/품질/계약 종료 등)를 확인해둘 필요가 있습니다. 신규 업체는 아직 거래 이력이 짧으므로 품질·납기 검증을 병행하는 것을 권장합니다 (초안 — 담당자 확인 요망).');
+}
+
+return pres.write({ outputType: 'nodebuffer' });
 }
 
 // ---- 구매 실적 보고서(PPTX) 자동 다운로드 ----
 router.get('/admin/purchase-data/performance-report', async (req, res) => {
-  const u = requireLogin('admin')(req, res);
-  if (!u) return;
-  const fromDate = /^\d{4}-\d{2}-\d{2}$/.test(req.query.from || '') ? req.query.from : '';
-  const toDate = /^\d{4}-\d{2}-\d{2}$/.test(req.query.to || '') ? req.query.to : '';
-  const site = ['포천', '창녕'].includes(req.query.site) ? req.query.site : '포천';
-  const period = /^\d{4}$/.test(req.query.period || '') ? req.query.period : '';
-  try {
-    const combinedRows = await getCombinedPurchaseDataRows({ fromDate, toDate });
-    const D = buildPurchaseReportData({ rows: combinedRows, site, mainPeriod: period });
-    if (!D) {
-      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
-      res.end(layout({
-        title: '구매 실적 보고서',
-        body: `<div class="card"><h2>보고서를 만들 수 없습니다</h2><p class="hint">선택한 기간(${escapeHtml(fromDate || '전체')}~${escapeHtml(toDate || '전체')}) 안에 "${escapeHtml(site)}" 사업장 구매 데이터가 없습니다. 기간이나 사업장을 다시 확인해 주세요.</p><p><a class="btn secondary" href="/admin/purchase-data">← 구매Data로 돌아가기</a></p></div>`,
-        user: u, active: 'purchase-data',
-      }));
-      return;
-    }
-    const buf = await buildPurchasePerformancePptxBuffer(D);
-    const fname = encodeURIComponent(`구매실적보고서_${site}_${D.mainPeriod}.pptx`);
-    res.writeHead(200, {
-      'Content-Type': 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
-      'Content-Disposition': `attachment; filename="report.pptx"; filename*=UTF-8''${fname}`,
-      'Content-Length': buf.length,
-    });
-    res.end(buf);
-  } catch (err) {
-    console.error('performance-report error', err);
-    res.writeHead(500, { 'Content-Type': 'text/html; charset=utf-8' });
-    res.end(layout({ title: '오류', body: `<div class="card"><h2>보고서 생성 중 오류가 발생했습니다</h2><p class="hint">${escapeHtml(String(err && err.message || err))}</p></div>`, user: u, active: 'purchase-data' }));
-  }
+const u = requireLogin('admin')(req, res);
+if (!u) return;
+const fromDate = /^\d{4}-\d{2}-\d{2}$/.test(req.query.from || '') ? req.query.from : '';
+const toDate = /^\d{4}-\d{2}-\d{2}$/.test(req.query.to || '') ? req.query.to : '';
+const site = ['포천', '창녕'].includes(req.query.site) ? req.query.site : '포천';
+const period = /^\d{4}$/.test(req.query.period || '') ? req.query.period : '';
+try {
+const combinedRows = await getCombinedPurchaseDataRows({ fromDate, toDate });
+const D = buildPurchaseReportData({ rows: combinedRows, site, mainPeriod: period });
+if (!D) {
+res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+res.end(layout({
+title: '구매 실적 보고서',
+body: `<div class="card"><h2>보고서를 만들 수 없습니다</h2><p class="hint">선택한 기간(${escapeHtml(fromDate || '전체')}~${escapeHtml(toDate || '전체')}) 안에 "${escapeHtml(site)}" 사업장 구매 데이터가 없습니다. 기간이나 사업장을 다시 확인해 주세요.</p><p><a class="btn secondary" href="/admin/purchase-data">← 구매Data로 돌아가기</a></p></div>`,
+user: u, active: 'purchase-data',
+}));
+return;
+}
+const buf = await buildPurchasePerformancePptxBuffer(D);
+const fname = encodeURIComponent(`구매실적보고서_${site}_${D.mainPeriod}.pptx`);
+res.writeHead(200, {
+'Content-Type': 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+'Content-Disposition': `attachment; filename="report.pptx"; filename*=UTF-8''${fname}`,
+'Content-Length': buf.length,
 });
+res.end(buf);
+} catch (err) {
+console.error('performance-report error', err);
+res.writeHead(500, { 'Content-Type': 'text/html; charset=utf-8' });
+res.end(layout({ title: '오류', body: `<div class="card"><h2>보고서 생성 중 오류가 발생했습니다</h2><p class="hint">${escapeHtml(String(err && err.message || err))}</p></div>`, user: u, active: 'purchase-data' }));
+}
+});
+
 router.get('/admin', async (req, res) => {
 const u = requireLogin('admin')(req, res);
 if (!u) return;
@@ -3750,132 +3922,6 @@ WHERE id=?
 redirect(res, '/admin/sites');
 });
 
-// 기간(from~to)으로 필터링한 구매Data 행을 만든다 — 견적시스템에서 선정 완료된 건 + 관리자가 수동으로
-// 등록한 건을 합쳐서 PURCHASE_DATA_COLS 순서의 2차원 배열로 반환한다. 다운로드용(단일 시트)과
-// 구매실적보고서 원본데이터용(연도별 시트)이 이 함수를 공유해서 쓴다.
-async function getCombinedPurchaseDataRows({ fromDate, toDate }) {
-  const dateConditions = [];
-  const dateArgs = [];
-  if (fromDate) { dateConditions.push("date(fs.selected_at) >= date(?)"); dateArgs.push(fromDate); }
-  if (toDate) { dateConditions.push("date(fs.selected_at) <= date(?)"); dateArgs.push(toDate); }
-  const whereClause = dateConditions.length ? `WHERE ${dateConditions.join(' AND ')}` : '';
-  const rows = await db.prepare(`
-  SELECT
-  qr.title AS request_title,
-  qr.draft_no AS draft_no,
-  qr.draft_title AS draft_title,
-  st.name AS site_name,
-  qr.submission_deadline AS submission_deadline,
-  qr.requested_delivery_date AS requested_delivery_date,
-  qi.item_name AS req_item_name,
-  qi.spec AS req_spec,
-  qi.qty AS req_qty,
-  qi.unit AS req_unit,
-  qi.category1 AS category1,
-  qi.category2 AS category2,
-  qi.category3 AS category3,
-  v.name AS vendor_name,
-  sub.product_name AS product_name,
-  sub.spec AS sub_spec,
-  sub.qty AS sub_qty,
-  sub.unit AS sub_unit,
-  sub.unit_price AS unit_price,
-  (sub.unit_price * sub.qty) AS total_price,
-  sub.manufacturer AS manufacturer,
-  sub.delivery_date AS delivery_date,
-  sub.type AS sub_type,
-  sub.substitute_reason AS substitute_reason,
-  fs.reason AS selection_reason,
-  fs.selected_at AS selected_at,
-  fs.received_date AS received_date,
-  fs.payment_date AS payment_date,
-  fs.payment_recipient AS payment_recipient
-  FROM final_selections fs
-  JOIN submissions sub ON sub.id = fs.submission_id
-  JOIN vendors v ON v.id = sub.vendor_id
-  JOIN quote_items qi ON qi.id = fs.quote_item_id
-  JOIN quote_requests qr ON qr.id = qi.quote_request_id
-  LEFT JOIN sites st ON st.id = qr.site_id
-  ${whereClause}
-  ORDER BY qr.id DESC, qi.id
-  `).all(...dateArgs);
-  // 품의번호/제목은 견적요청 완료 처리 화면에서 입력한 기안번호/기안제목을 사용한다(없으면 제목은 견적요청 제목으로 대체).
-  // 입고일은 완료 처리에서 입력한 실제 입고일자를 우선 사용하고, 아직 완료 처리 전이면 업체가 제출한 납기일자로 대체한다.
-  // 대금지급일/지급처도 완료 처리에서 입력한 값을 사용한다. 완료 처리 전이면 계속 빈 칸일 수 있다.
-  // 견적 시스템에 아직 없는 항목(담당자/요청부서/대금지급)은 빈 칸으로 둔다.
-  const dataRows = rows.map((r) => {
-    const orderDate = (r.selected_at || '').slice(0, 10);
-    const year = (r.selected_at || '').slice(0, 4);
-    const siteBare = (r.site_name || '').replace(/^힐마루\s*/, '');
-    return [
-      '', year, siteBare, '', r.category1 || '', r.category2 || '', r.category3 || '', r.draft_no || '', r.draft_title || r.request_title, r.vendor_name,
-      orderDate, r.received_date || r.delivery_date || '', r.sub_type === 'substitute' ? '대체품' : '요청품',
-      r.product_name, r.sub_spec || '', r.sub_qty, r.unit_price, r.total_price, r.sub_qty, r.sub_unit || '',
-      r.payment_date || '', '', r.payment_recipient || '', r.selection_reason || r.substitute_reason || '',
-      ];
-  });
-  
-  // 견적 시스템을 거치지 않고 관리자가 엑셀로 수동 등록한 구매건도 같은 기간 필터로 합산한다.
-  const manualConditions = [];
-  const manualArgs = [];
-  if (fromDate) { manualConditions.push("order_date <> '' AND date(order_date) >= date(?)"); manualArgs.push(fromDate); }
-  if (toDate) { manualConditions.push("order_date <> '' AND date(order_date) <= date(?)"); manualArgs.push(toDate); }
-  const manualWhere = manualConditions.length ? `WHERE ${manualConditions.join(' AND ')}` : '';
-  const manualRecords = await db.prepare(`SELECT * FROM manual_purchase_records ${manualWhere} ORDER BY id DESC`).all(...manualArgs);
-  const manualDataRows = manualRecords.map((m) => [
-    m.manager, m.year, m.site, m.dept, m.category1, m.category2, m.category3, m.draft_no, m.title, m.vendor_name,
-    m.order_date, m.received_date, m.item_type, m.item_name, m.spec, m.order_qty, m.unit_price, m.supply_price,
-    m.received_qty, m.pack_unit, m.payment_date, m.payment_amount, m.payment_recipient, m.note,
-    ]);
-  
-  return [...dataRows, ...manualDataRows];
-}
-
-// ---- 전체 견적요청의 선정 결과(품목·업체·단가 등)를 한 엑셀로 통합 다운로드 ----
-router.get('/admin/quote-requests/export-results', async (req, res) => {
-  const u = requireLogin('admin')(req, res);
-  if (!u) return;
-  // 기간 필터 기준: 발주일(현재는 최종선정일시 fs.selected_at을 발주일 대용으로 씀).
-  // 필요하면 나중에 실제 발주일 필드가 생기는 시점에 이 기준 컬럼만 바꾸면 된다.
-  const fromDate = /^\d{4}-\d{2}-\d{2}$/.test(req.query.from || '') ? req.query.from : '';
-  const toDate = /^\d{4}-\d{2}-\d{2}$/.test(req.query.to || '') ? req.query.to : '';
-  const combinedRows = await getCombinedPurchaseDataRows({ fromDate, toDate });
-  const rangeLabel = (fromDate || toDate) ? `${fromDate || '처음'}~${toDate || '오늘'}` : `전체_${new Date().toISOString().slice(0, 10)}`;
-  sendXlsxTemplate(res, `구매Data_${rangeLabel}.xlsx`, ['구매Data'], [[], PURCHASE_DATA_COLS, ...combinedRows]);
-});
-
-// ---- 힐마루 구매 실적 보고서(hillmaru-purchase-performance-report 스킬) 원본데이터용 다운로드 ----
-// 스킬은 "워크북 하나, 연도별로 시트 하나씩, 헤더는 3행"이라는 형식을 기대한다(SKILL.md 기준).
-// 여기서는 지정한 기간의 구매Data를 발주일 기준 연도별로 나눠 시트를 만들어준다.
-// 실제 슬라이드(PPTX) 생성은 이 파일을 다시 Claude/Cowork에 올려서 스킬로 진행한다(자동 생성 아님).
-router.get('/admin/purchase-data/report-export', async (req, res) => {
-  const u = requireLogin('admin')(req, res);
-  if (!u) return;
-  const fromDate = /^\d{4}-\d{2}-\d{2}$/.test(req.query.from || '') ? req.query.from : '';
-  const toDate = /^\d{4}-\d{2}-\d{2}$/.test(req.query.to || '') ? req.query.to : '';
-  const combinedRows = await getCombinedPurchaseDataRows({ fromDate, toDate });
-  
-  const byYear = new Map();
-  for (const row of combinedRows) {
-    const year = (row[1] || '').toString().trim() || '연도미기재';
-    if (!byYear.has(year)) byYear.set(year, []);
-    byYear.get(year).push(row);
-  }
-  const years = Array.from(byYear.keys()).sort();
-  const sheets = years.map((year) => {
-    const yearRows = byYear.get(year).slice().sort((a, b) => String(a[10] || '').localeCompare(String(b[10] || '')));
-    return {
-      name: year,
-      rows: [[`구매Data ${year}`], [], PURCHASE_DATA_COLS, ...yearRows],
-    };
-  });
-  if (sheets.length === 0) {
-    sheets.push({ name: '구매Data', rows: [['구매Data'], [], PURCHASE_DATA_COLS] });
-  }
-  const rangeLabel = (fromDate || toDate) ? `${fromDate || '처음'}~${toDate || '오늘'}` : `전체_${new Date().toISOString().slice(0, 10)}`;
-  sendMultiSheetXlsx(res, `구매실적보고서_원본데이터_${rangeLabel}.xlsx`, sheets);
-});
-
 // ---------- 관리자: 구매Data 수동입력 (견적시스템을 거치지 않은 구매건) ----------
 router.get('/admin/purchase-data', async (req, res) => {
 const u = requireLogin('admin')(req, res);
@@ -3904,14 +3950,33 @@ try {
 rows = readXlsxFirstSheet(files.purchase_excel.data);
 } catch (e) {
 console.error('[엑셀] 구매Data 수동입력 파싱 실패:', e.message);
-return redirect(res, '/admin/purchase-data');
+const records = await db.prepare('SELECT * FROM manual_purchase_records ORDER BY id DESC').all();
+res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+return res.end(views.adminPurchaseDataPage({ user: u, records, flash: { type: 'error', message: `엑셀 파일을 읽는 중 오류가 발생했습니다: ${e.message}` } }));
 }
+// 배치 식별자: 이 업로드(파일 1개) 전체를 나중에 한 번에 지울 수 있도록 모든 행에 같은 값을 남긴다.
+const importBatch = `${new Date().toISOString()}_${Math.random().toString(36).slice(2, 8)}`;
+const importFileName = files.purchase_excel.filename || '';
+// 이미 저장된 행과 내용이 완전히 같으면 중복으로 보고 건너뛴다 — 같은 엑셀을 두 번(또는 같은 파일 안에 같은 행이
+// 두 번) 올려도 구매Data가 중복 저장되던 문제의 원인이라, 저장 전 항상 내용 기준으로 대조한다.
+const existingRows = await db.prepare(`
+SELECT manager, year, site, dept, category1, category2, category3, draft_no, title, vendor_name,
+order_date, received_date, item_type, item_name, spec, order_qty, unit_price, supply_price,
+received_qty, pack_unit, payment_date, payment_amount, payment_recipient, note
+FROM manual_purchase_records
+`).all();
+const seen = new Set(existingRows.map((r) => JSON.stringify([
+r.manager, r.year, r.site, r.dept, r.category1, r.category2, r.category3, r.draft_no, r.title, r.vendor_name,
+r.order_date, r.received_date, r.item_type, r.item_name, r.spec, String(r.order_qty ?? ''), String(r.unit_price ?? ''), String(r.supply_price ?? ''),
+String(r.received_qty ?? ''), r.pack_unit, r.payment_date, String(r.payment_amount ?? ''), r.payment_recipient, r.note,
+])));
 const insertRecord = db.prepare(`
 INSERT INTO manual_purchase_records
-(manager, year, site, dept, category1, category2, category3, draft_no, title, vendor_name, order_date, received_date, item_type, item_name, spec, order_qty, unit_price, supply_price, received_qty, pack_unit, payment_date, payment_amount, payment_recipient, note, created_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+(manager, year, site, dept, category1, category2, category3, draft_no, title, vendor_name, order_date, received_date, item_type, item_name, spec, order_qty, unit_price, supply_price, received_qty, pack_unit, payment_date, payment_amount, payment_recipient, note, created_at, import_batch, import_file_name)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 `);
 let created = 0;
+let skipped = 0;
 for (let i = 1; i < rows.length; i++) {
 const r = rows[i];
 if (xlsxRowIsEmpty(r)) continue;
@@ -3920,16 +3985,44 @@ if (!itemName && !title) continue;
 const orderDate = excelSerialToDateStr(orderDateRaw);
 const receivedDate = excelSerialToDateStr(receivedDateRaw);
 const paymentDate = excelSerialToDateStr(paymentDateRaw);
-await insertRecord.run(
+const values = [
 manager || '', year || '', site || '', dept || '', category1 || '', category2 || '', category3 || '',
 draftNo || '', title || '', vendorName || '', orderDate, receivedDate, itemType || '', itemName || '', spec || '',
-orderQty ?? '', unitPrice ?? '', supplyPrice ?? '', receivedQty ?? '', packUnit || '', paymentDate, paymentAmount ?? '',
-paymentRecipient || '', note || '', new Date().toISOString(),
-);
+String(orderQty ?? ''), String(unitPrice ?? ''), String(supplyPrice ?? ''), String(receivedQty ?? ''), packUnit || '', paymentDate, String(paymentAmount ?? ''),
+paymentRecipient || '', note || '',
+];
+const signature = JSON.stringify(values);
+if (seen.has(signature)) { skipped++; continue; }
+seen.add(signature);
+await insertRecord.run(...values, new Date().toISOString(), importBatch, importFileName);
 created++;
 }
-console.log(`[엑셀] 구매Data 수동입력: 생성 ${created}건`);
-redirect(res, '/admin/purchase-data');
+console.log(`[엑셀] 구매Data 수동입력: 생성 ${created}건, 중복 스킵 ${skipped}건 (배치 ${importBatch})`);
+const records = await db.prepare('SELECT * FROM manual_purchase_records ORDER BY id DESC').all();
+res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+const msg = created === 0 && skipped === 0
+? '엑셀에 등록할 행이 없습니다. 양식과 내용을 확인해 주세요.'
+: skipped > 0
+? `${created}건 등록 완료. 이미 등록된 내용과 완전히 같은 ${skipped}건은 중복으로 보고 건너뛰었습니다.`
+: `${created}건 등록 완료.`;
+res.end(views.adminPurchaseDataPage({ user: u, records, flash: { type: created > 0 || skipped > 0 ? 'success' : 'error', message: msg } }));
+});
+
+// ---- 업로드 배치(엑셀 1회 업로드) 단위로 구매Data를 한 번에 삭제 ----
+// 잘못 올렸을 때 한 건씩 지우지 않고, 그 배치를 통째로 지우고 다시 올릴 수 있게 하기 위함.
+// 주의: 아래 '/:id/delete' 라우터보다 반드시 먼저 등록해야 함.
+// 라우터가 등록 순서대로 첫 매치를 사용하므로, ':id/delete'가 먼저 있으면
+// 'batch'라는 문자열이 id로 잘못 매칭되어 Number('batch') === NaN 오류가 발생함.
+router.post('/admin/purchase-data/batch/delete', async (req, res) => {
+const u = requireLogin('admin')(req, res);
+if (!u) return;
+const body = await parseBody(req);
+const batch = body.batch || '';
+const result = await db.prepare('DELETE FROM manual_purchase_records WHERE import_batch = ?').run(batch);
+const deleted = result && typeof result.changes === 'number' ? result.changes : 0;
+const records = await db.prepare('SELECT * FROM manual_purchase_records ORDER BY id DESC').all();
+res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+res.end(views.adminPurchaseDataPage({ user: u, records, flash: { type: 'success', message: `이 업로드 배치의 구매건 ${deleted}건을 삭제했습니다.` } }));
 });
 
 router.post('/admin/purchase-data/:id/delete', async (req, res) => {
