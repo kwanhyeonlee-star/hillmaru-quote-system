@@ -1428,6 +1428,7 @@ vendors: '<svg width="15" height="15" viewBox="0 0 20 20" fill="none" stroke="cu
 categories: '<svg width="15" height="15" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M3 6.5l2-2.5h4l1.5 2h5.5v9a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1v-8.5z"></path></svg>',
 sites: '<svg width="15" height="15" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="3" y="3" width="6" height="14" rx="1"></rect><rect x="11" y="8" width="6" height="9" rx="1"></rect></svg>',
 purchaseData: '<svg width="15" height="15" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M5 3h7l3 3v10a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1z"></path><path d="M12 3v3h3"></path><line x1="6.5" y1="10.5" x2="12.5" y2="10.5"></line><line x1="6.5" y1="13.5" x2="10.5" y2="13.5"></line></svg>',
+admins: '<svg width="15" height="15" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="8" cy="7" r="3"></circle><path d="M2.5 17c0-3.5 2.5-5.5 5.5-5.5s5.5 2 5.5 5.5"></path><line x1="15" y1="6" x2="15" y2="11"></line><line x1="12.5" y1="8.5" x2="17.5" y2="8.5"></line></svg>',
 };
 function sidebarNavItem({ href, label, active, icon }) {
 return `<a class="navitem${active ? ' active' : ''}" href="${href}">
@@ -1451,6 +1452,7 @@ ${sidebarNavItem({ href: '/admin/vendors', label: '업체 관리', active: activ
 ${sidebarNavItem({ href: '/admin/categories', label: '업체 카테고리 관리', active: active === 'categories', icon: NAV_ICONS.categories })}
 ${sidebarNavItem({ href: '/admin/sites', label: '사업장 관리', active: active === 'sites', icon: NAV_ICONS.sites })}
 ${sidebarNavItem({ href: '/admin/purchase-data', label: '구매Data', active: active === 'purchase-data', icon: NAV_ICONS.purchaseData })}
+${sidebarNavItem({ href: '/admin/admins', label: '관리자 계정 관리', active: active === 'admins', icon: NAV_ICONS.admins })}
 </nav>
 <div class="sidebar-account">
 <div class="who-label">로그인 계정</div>
@@ -1993,6 +1995,47 @@ ${records.length === 0 ? '<p class="hint">수동으로 등록된 구매건이 �
 </div>
 `;
 return layout({ title: '구매Data', body, user, flash, active: 'purchase-data' });
+}
+
+// 관리자 계정을 여러 개 운영할 수 있도록, 로그인한 관리자가 새 관리자 계정을 추가/삭제하는 화면.
+// 마지막 남은 관리자 계정과 본인 계정은 삭제할 수 없게 막아 잠금(lock-out)을 방지한다.
+function adminAdminsPage({ user, admins, flash }) {
+const rows = admins.map((a) => `
+<tr>
+<td>${escapeHtml(a.login_id)}</td>
+<td>${escapeHtml(a.display_name)}</td>
+<td>${a.id === user.userId ? '<span class="hint">현재 로그인 계정</span>' : (admins.length > 1 ? `
+<form method="POST" action="/admin/admins/${a.id}/delete" class="inline" onsubmit="return confirm('${escapeHtml(a.display_name)}(${escapeHtml(a.login_id)}) 계정을 삭제할까요?');">
+<button type="submit" class="btn small danger">삭제</button>
+</form>` : '<span class="hint">-</span>')}</td>
+</tr>`).join('');
+
+const body = `
+<div class="section-actions">
+<h1>관리자 계정 관리</h1>
+</div>
+<p class="hint" style="margin-top:-10px;margin-bottom:16px;">여기서 추가한 계정은 관리자 로그인 화면에서 동일하게 로그인할 수 있습니다.</p>
+<div class="card">
+<div class="table-scroll">
+<table class="table-wide">
+<thead><tr><th>아이디</th><th>이름</th><th></th></tr></thead>
+<tbody>${rows}</tbody>
+</table>
+</div>
+</div>
+<h2>새 관리자 계정 추가</h2>
+<div class="card">
+<form method="POST" action="/admin/admins">
+<div class="form-row">
+<div><label>아이디</label><input type="text" name="login_id" required></div>
+<div><label>이름</label><input type="text" name="display_name" required></div>
+<div><label>비밀번호</label><input type="password" name="password" required minlength="4"></div>
+</div>
+<div style="margin-top:14px;"><button type="submit" class="btn">계정 추가</button></div>
+</form>
+</div>
+`;
+return layout({ title: '관리자 계정 관리', body, user, flash, active: 'admins' });
 }
 
 function itemCategorySelects(cat1Options, cat2Options, cat3Options, sel1, sel2, sel3) {
@@ -2542,7 +2585,7 @@ const body = `
 return layout({ title: '계정설정', body, user, flash });
 }
 
-const views = { loginPage, adminDashboard, adminVendorsPage, adminCategoriesPage, adminSitesPage, adminPurchaseDataPage, quoteRequestNewPage, quoteRequestEditPage, quoteRequestDetailPage, vendorDashboard, vendorQuoteRequestPage, accountPage };
+const views = { loginPage, adminDashboard, adminVendorsPage, adminCategoriesPage, adminSitesPage, adminPurchaseDataPage, adminAdminsPage, quoteRequestNewPage, quoteRequestEditPage, quoteRequestDetailPage, vendorDashboard, vendorQuoteRequestPage, accountPage };
 
 // ===== server.js =====
 const PO_TEMPLATE_PATH = path.join(__dirname, 'po_template.xlsx');
@@ -3151,6 +3194,46 @@ if (!u) return;
 const id = Number(req.params.id);
 await db.prepare('DELETE FROM manual_purchase_records WHERE id = ?').run(id);
 redirect(res, '/admin/purchase-data');
+});
+
+// ---------- 관리자: 관리자 계정 관리 (여러 관리자 계정 운영) ----------
+router.get('/admin/admins', async (req, res) => {
+const u = requireLogin('admin')(req, res);
+if (!u) return;
+const admins = await db.prepare('SELECT id, login_id, display_name FROM admins ORDER BY id').all();
+res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+res.end(views.adminAdminsPage({ user: u, admins }));
+});
+
+router.post('/admin/admins', async (req, res) => {
+const u = requireLogin('admin')(req, res);
+if (!u) return;
+const body = await parseBody(req);
+const loginId = (body.login_id || '').trim();
+const displayName = (body.display_name || '').trim();
+const password = body.password || '';
+if (!loginId || !displayName || !password) return redirect(res, '/admin/admins');
+const existing = await db.prepare('SELECT id FROM admins WHERE login_id = ?').get(loginId);
+if (existing) {
+res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+const admins = await db.prepare('SELECT id, login_id, display_name FROM admins ORDER BY id').all();
+return res.end(views.adminAdminsPage({ user: u, admins, flash: { type: 'error', message: `이미 사용 중인 아이디입니다: ${loginId}` } }));
+}
+await db.prepare('INSERT INTO admins (login_id, password_hash, display_name) VALUES (?, ?, ?)')
+.run(loginId, auth.hashPassword(password), displayName);
+console.log(`[관리자 계정] 새 관리자 계정 생성: ${loginId} (${displayName}), 생성자: ${u.displayName}`);
+redirect(res, '/admin/admins');
+});
+
+router.post('/admin/admins/:id/delete', async (req, res) => {
+const u = requireLogin('admin')(req, res);
+if (!u) return;
+const id = Number(req.params.id);
+if (id === u.userId) return redirect(res, '/admin/admins');
+const count = (await db.prepare('SELECT COUNT(*) AS c FROM admins').get()).c;
+if (count <= 1) return redirect(res, '/admin/admins');
+await db.prepare('DELETE FROM admins WHERE id = ?').run(id);
+redirect(res, '/admin/admins');
 });
 
 // ---------- 관리자: 업체 관리 ----------
