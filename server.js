@@ -663,6 +663,34 @@ payment_date TEXT DEFAULT '',
 payment_recipient TEXT DEFAULT '',
 selected_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS manual_purchase_records (
+id INTEGER PRIMARY KEY AUTOINCREMENT,
+manager TEXT DEFAULT '',
+year TEXT DEFAULT '',
+site TEXT DEFAULT '',
+dept TEXT DEFAULT '',
+category1 TEXT DEFAULT '',
+category2 TEXT DEFAULT '',
+category3 TEXT DEFAULT '',
+draft_no TEXT DEFAULT '',
+title TEXT DEFAULT '',
+vendor_name TEXT DEFAULT '',
+order_date TEXT DEFAULT '',
+received_date TEXT DEFAULT '',
+item_type TEXT DEFAULT '',
+item_name TEXT DEFAULT '',
+spec TEXT DEFAULT '',
+order_qty TEXT DEFAULT '',
+unit_price TEXT DEFAULT '',
+supply_price TEXT DEFAULT '',
+received_qty TEXT DEFAULT '',
+pack_unit TEXT DEFAULT '',
+payment_date TEXT DEFAULT '',
+payment_amount TEXT DEFAULT '',
+payment_recipient TEXT DEFAULT '',
+note TEXT DEFAULT '',
+created_at TEXT DEFAULT ''
+);
 `);
 
 // ---- 마이그레이션: 기존 vendors 테이블에 category(단일) 컬럼만 있던 경우 대응 ----
@@ -1155,6 +1183,10 @@ const BUYERS = {
 // 대금지급 지급처(돈이 실제로 나가는 사업장) 고정 목록
 const PAYMENT_SOURCES = ['본사', '창녕', '포천'];
 
+// 구매 실적 보고서 스킬(hillmaru-purchase-performance-report)이 읽는 원본 구매데이터 양식과
+// 동일하게 맞춘 24개 컬럼. 견적요청 결과 다운로드와 수동 구매Data 입력 화면에서 함께 사용한다.
+const PURCHASE_DATA_COLS = ['담당자', '연도', '사업장', '요청부서', '과목1', '과목2', '과목3', '품의번호', '제목', '업체명', '발주일', '입고일', '제품구분', '제품명', '규격', '발주수량', '단가', '공급가', '입고수량', '포장단위', '대금지급일', '대금지급', '지급처', '비고'];
+
 const ITEM_ROW_START = 16;
 const ITEM_ROW_MAX = 36; // 템플릿에 준비된 품목 행 범위 (21행)
 
@@ -1395,6 +1427,7 @@ dashboard: '<svg width="15" height="15" viewBox="0 0 20 20" fill="none" stroke="
 vendors: '<svg width="15" height="15" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="7" cy="7" r="2.6"></circle><path d="M2 17c0-3 2.2-4.6 5-4.6s5 1.6 5 4.6"></path><circle cx="15" cy="8.4" r="2"></circle><path d="M13.3 17c.2-2 1.5-3.3 3.4-3.7"></path></svg>',
 categories: '<svg width="15" height="15" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M3 6.5l2-2.5h4l1.5 2h5.5v9a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1v-8.5z"></path></svg>',
 sites: '<svg width="15" height="15" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="3" y="3" width="6" height="14" rx="1"></rect><rect x="11" y="8" width="6" height="9" rx="1"></rect></svg>',
+purchaseData: '<svg width="15" height="15" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M5 3h7l3 3v10a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1z"></path><path d="M12 3v3h3"></path><line x1="6.5" y1="10.5" x2="12.5" y2="10.5"></line><line x1="6.5" y1="13.5" x2="10.5" y2="13.5"></line></svg>',
 };
 function sidebarNavItem({ href, label, active, icon }) {
 return `<a class="navitem${active ? ' active' : ''}" href="${href}">
@@ -1417,6 +1450,7 @@ ${sidebarNavItem({ href: '/admin', label: '대시보드', active: active === 'da
 ${sidebarNavItem({ href: '/admin/vendors', label: '업체 관리', active: active === 'vendors', icon: NAV_ICONS.vendors })}
 ${sidebarNavItem({ href: '/admin/categories', label: '업체 카테고리 관리', active: active === 'categories', icon: NAV_ICONS.categories })}
 ${sidebarNavItem({ href: '/admin/sites', label: '사업장 관리', active: active === 'sites', icon: NAV_ICONS.sites })}
+${sidebarNavItem({ href: '/admin/purchase-data', label: '구매Data 수동입력', active: active === 'purchase-data', icon: NAV_ICONS.purchaseData })}
 </nav>
 <div class="sidebar-account">
 <div class="who-label">로그인 계정</div>
@@ -1893,6 +1927,67 @@ ${(onsiteContacts || []).map((c) => `
 </div>` : ''}
 `;
 return layout({ title: '사업장 관리', body, user, flash, active: 'sites' });
+}
+
+// 견적관리 시스템을 거치지 않고 진행된 구매건을 관리자가 엑셀로 직접 등록해두는 화면.
+// 구매Data 다운로드 시 견적 기반 데이터와 합산되어 나간다.
+function adminPurchaseDataPage({ user, records, flash }) {
+const rows = records.map((m) => `
+<tr>
+<td class="wrap">${escapeHtml(m.manager)}</td>
+<td>${escapeHtml(m.year)}</td>
+<td class="wrap">${escapeHtml(m.site)}</td>
+<td class="wrap">${escapeHtml(m.dept)}</td>
+<td class="wrap">${escapeHtml(m.category1)}</td>
+<td class="wrap">${escapeHtml(m.category2)}</td>
+<td class="wrap">${escapeHtml(m.category3)}</td>
+<td class="wrap">${escapeHtml(m.draft_no)}</td>
+<td class="wrap">${escapeHtml(m.title)}</td>
+<td class="wrap">${escapeHtml(m.vendor_name)}</td>
+<td>${escapeHtml(m.order_date)}</td>
+<td>${escapeHtml(m.received_date)}</td>
+<td class="wrap">${escapeHtml(m.item_type)}</td>
+<td class="wrap">${escapeHtml(m.item_name)}</td>
+<td class="wrap">${escapeHtml(m.spec)}</td>
+<td>${escapeHtml(String(m.order_qty ?? ''))}</td>
+<td>${escapeHtml(String(m.unit_price ?? ''))}</td>
+<td>${escapeHtml(String(m.supply_price ?? ''))}</td>
+<td>${escapeHtml(String(m.received_qty ?? ''))}</td>
+<td>${escapeHtml(m.pack_unit)}</td>
+<td>${escapeHtml(m.payment_date)}</td>
+<td>${escapeHtml(String(m.payment_amount ?? ''))}</td>
+<td>${escapeHtml(m.payment_recipient)}</td>
+<td class="wrap">${escapeHtml(m.note)}</td>
+<td>
+<form method="POST" action="/admin/purchase-data/${m.id}/delete" class="inline" onsubmit="return confirm('이 구매건을 삭제할까요?');">
+<button type="submit" class="btn small danger">삭제</button>
+</form>
+</td>
+</tr>`).join('');
+
+const body = `
+<div class="section-actions">
+<h1>구매Data 수동입력</h1>
+</div>
+<p class="hint" style="margin-top:-10px;margin-bottom:16px;">견적관리 시스템을 거치지 않고 진행된 구매건을 여기에 엑셀로 등록해두면, 관리자 대시보드의 "구매Data 다운로드"에 견적 기반 데이터와 함께 합산되어 나갑니다.</p>
+<div class="card bulk-btns">
+<a class="btn secondary small" href="/admin/purchase-data/template">↓ 등록 양식 다운로드(.xlsx)</a>
+<form method="POST" action="/admin/purchase-data/import" enctype="multipart/form-data" style="display:inline-flex;gap:8px;align-items:center;margin-left:10px;">
+<input type="file" name="purchase_excel" accept=".xlsx" required>
+<button type="submit" class="btn small">엑셀로 일괄 등록</button>
+</form>
+</div>
+<div class="card">
+${records.length === 0 ? '<p class="hint">수동으로 등록된 구매건이 없습니다.</p>' : `
+<div class="table-scroll">
+<table class="table-wide">
+<thead><tr>${PURCHASE_DATA_COLS.map((h) => `<th>${escapeHtml(h)}</th>`).join('')}<th></th></tr></thead>
+<tbody>${rows}</tbody>
+</table>
+</div>`}
+</div>
+`;
+return layout({ title: '구매Data 수동입력', body, user, flash, active: 'purchase-data' });
 }
 
 function itemCategorySelects(cat1Options, cat2Options, cat3Options, sel1, sel2, sel3) {
@@ -2441,7 +2536,7 @@ const body = `
 return layout({ title: '계정설정', body, user, flash });
 }
 
-const views = { loginPage, adminDashboard, adminVendorsPage, adminCategoriesPage, adminSitesPage, quoteRequestNewPage, quoteRequestEditPage, quoteRequestDetailPage, vendorDashboard, vendorQuoteRequestPage, accountPage };
+const views = { loginPage, adminDashboard, adminVendorsPage, adminCategoriesPage, adminSitesPage, adminPurchaseDataPage, quoteRequestNewPage, quoteRequestEditPage, quoteRequestDetailPage, vendorDashboard, vendorQuoteRequestPage, accountPage };
 
 // ===== server.js =====
 const PO_TEMPLATE_PATH = path.join(__dirname, 'po_template.xlsx');
@@ -2705,13 +2800,11 @@ LEFT JOIN sites st ON st.id = qr.site_id
 ${whereClause}
 ORDER BY qr.id DESC, qi.id
 `).all(...dateArgs);
-// 구매 실적 보고서 스킬(hillmaru-purchase-performance-report)이 읽는 원본 구매데이터 양식과
-// 최대한 동일하게 맞춘 24개 컬럼. 헤더는 3행(header=2)에 오도록 1~2행은 비워둔다.
+// 헤더는 3행(header=2)에 오도록 1~2행은 비워둔다.
 // 품의번호/제목은 견적요청 완료 처리 화면에서 입력한 기안번호/기안제목을 사용한다(없으면 제목은 견적요청 제목으로 대체).
 // 입고일은 완료 처리에서 입력한 실제 입고일자를 우선 사용하고, 아직 완료 처리 전이면 업체가 제출한 납기일자로 대체한다.
 // 대금지급일/지급처도 완료 처리에서 입력한 값을 사용한다. 완료 처리 전이면 계속 빈 칸일 수 있다.
 // 견적 시스템에 아직 없는 항목(담당자/요청부서/대금지급)은 빈 칸으로 둔다.
-const PURCHASE_DATA_COLS = ['담당자', '연도', '사업장', '요청부서', '과목1', '과목2', '과목3', '품의번호', '제목', '업체명', '발주일', '입고일', '제품구분', '제품명', '규격', '발주수량', '단가', '공급가', '입고수량', '포장단위', '대금지급일', '대금지급', '지급처', '비고'];
 const dataRows = rows.map((r) => {
 const orderDate = (r.selected_at || '').slice(0, 10);
 const year = (r.selected_at || '').slice(0, 4);
@@ -2723,8 +2816,22 @@ r.product_name, r.sub_spec || '', r.sub_qty, r.unit_price, r.total_price, r.sub_
 r.payment_date || '', '', r.payment_recipient || '', r.selection_reason || r.substitute_reason || '',
 ];
 });
+
+// 견적 시스템을 거치지 않고 관리자가 엑셀로 수동 등록한 구매건도 같은 기간 필터로 합산한다.
+const manualConditions = [];
+const manualArgs = [];
+if (fromDate) { manualConditions.push("order_date <> '' AND date(order_date) >= date(?)"); manualArgs.push(fromDate); }
+if (toDate) { manualConditions.push("order_date <> '' AND date(order_date) <= date(?)"); manualArgs.push(toDate); }
+const manualWhere = manualConditions.length ? `WHERE ${manualConditions.join(' AND ')}` : '';
+const manualRecords = await db.prepare(`SELECT * FROM manual_purchase_records ${manualWhere} ORDER BY id DESC`).all(...manualArgs);
+const manualDataRows = manualRecords.map((m) => [
+m.manager, m.year, m.site, m.dept, m.category1, m.category2, m.category3, m.draft_no, m.title, m.vendor_name,
+m.order_date, m.received_date, m.item_type, m.item_name, m.spec, m.order_qty, m.unit_price, m.supply_price,
+m.received_qty, m.pack_unit, m.payment_date, m.payment_amount, m.payment_recipient, m.note,
+]);
+
 const rangeLabel = (fromDate || toDate) ? `${fromDate || '처음'}~${toDate || '오늘'}` : `전체_${new Date().toISOString().slice(0, 10)}`;
-sendXlsxTemplate(res, `구매Data_${rangeLabel}.xlsx`, ['구매Data'], [[], PURCHASE_DATA_COLS, ...dataRows]);
+sendXlsxTemplate(res, `구매Data_${rangeLabel}.xlsx`, ['구매Data'], [[], PURCHASE_DATA_COLS, ...dataRows, ...manualDataRows]);
 });
 
 router.get('/admin', async (req, res) => {
@@ -2974,6 +3081,70 @@ UPDATE sites SET name=?, title_label=?, company_name=?, address=?, ceo_name=?, p
 WHERE id=?
 `).run(name, title_label, company_name || '(주)동훈', address || '', ceo_name || '', phone || '', biz_reg_no || '', item_type || '', biz_type || '', tax_email || '', onsite_contact || '', footer_label || '', id);
 redirect(res, '/admin/sites');
+});
+
+// ---------- 관리자: 구매Data 수동입력 (견적시스템을 거치지 않은 구매건) ----------
+router.get('/admin/purchase-data', async (req, res) => {
+const u = requireLogin('admin')(req, res);
+if (!u) return;
+const records = await db.prepare('SELECT * FROM manual_purchase_records ORDER BY id DESC').all();
+res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+res.end(views.adminPurchaseDataPage({ user: u, records }));
+});
+
+router.get('/admin/purchase-data/template', (req, res) => {
+const u = requireLogin('admin')(req, res);
+if (!u) return;
+sendXlsxTemplate(res, '구매Data_수동입력_양식.xlsx', PURCHASE_DATA_COLS,
+[['이관현 과장', '2026', '포천', '경기팀', '농자재', '', '', 'D-2026-001', '예시) 잔디용 비료 구매', '예시업체(주)', '2026-08-01', '2026-08-10', '요청품', '유기질 비료', '20kg', 10, 55000, 550000, 10, '포대', '2026-08-15', 550000, '포천', '견적시스템 미사용 건 예시']]
+);
+});
+
+router.post('/admin/purchase-data/import', async (req, res) => {
+const u = requireLogin('admin')(req, res);
+if (!u) return;
+await parseBody(req);
+const files = req.files || {};
+if (!files.purchase_excel || !files.purchase_excel.data) return redirect(res, '/admin/purchase-data');
+let rows;
+try {
+rows = readXlsxFirstSheet(files.purchase_excel.data);
+} catch (e) {
+console.error('[엑셀] 구매Data 수동입력 파싱 실패:', e.message);
+return redirect(res, '/admin/purchase-data');
+}
+const insertRecord = db.prepare(`
+INSERT INTO manual_purchase_records
+(manager, year, site, dept, category1, category2, category3, draft_no, title, vendor_name, order_date, received_date, item_type, item_name, spec, order_qty, unit_price, supply_price, received_qty, pack_unit, payment_date, payment_amount, payment_recipient, note, created_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+`);
+let created = 0;
+for (let i = 1; i < rows.length; i++) {
+const r = rows[i];
+if (xlsxRowIsEmpty(r)) continue;
+const [manager, year, site, dept, category1, category2, category3, draftNo, title, vendorName, orderDateRaw, receivedDateRaw, itemType, itemName, spec, orderQty, unitPrice, supplyPrice, receivedQty, packUnit, paymentDateRaw, paymentAmount, paymentRecipient, note] = r;
+if (!itemName && !title) continue;
+const orderDate = excelSerialToDateStr(orderDateRaw);
+const receivedDate = excelSerialToDateStr(receivedDateRaw);
+const paymentDate = excelSerialToDateStr(paymentDateRaw);
+await insertRecord.run(
+manager || '', year || '', site || '', dept || '', category1 || '', category2 || '', category3 || '',
+draftNo || '', title || '', vendorName || '', orderDate, receivedDate, itemType || '', itemName || '', spec || '',
+orderQty ?? '', unitPrice ?? '', supplyPrice ?? '', receivedQty ?? '', packUnit || '', paymentDate, paymentAmount ?? '',
+paymentRecipient || '', note || '', new Date().toISOString(),
+);
+created++;
+}
+console.log(`[엑셀] 구매Data 수동입력: 생성 ${created}건`);
+redirect(res, '/admin/purchase-data');
+});
+
+router.post('/admin/purchase-data/:id/delete', async (req, res) => {
+const u = requireLogin('admin')(req, res);
+if (!u) return;
+const id = Number(req.params.id);
+await db.prepare('DELETE FROM manual_purchase_records WHERE id = ?').run(id);
+redirect(res, '/admin/purchase-data');
 });
 
 // ---------- 관리자: 업체 관리 ----------
