@@ -1450,7 +1450,7 @@ ${sidebarNavItem({ href: '/admin', label: '대시보드', active: active === 'da
 ${sidebarNavItem({ href: '/admin/vendors', label: '업체 관리', active: active === 'vendors', icon: NAV_ICONS.vendors })}
 ${sidebarNavItem({ href: '/admin/categories', label: '업체 카테고리 관리', active: active === 'categories', icon: NAV_ICONS.categories })}
 ${sidebarNavItem({ href: '/admin/sites', label: '사업장 관리', active: active === 'sites', icon: NAV_ICONS.sites })}
-${sidebarNavItem({ href: '/admin/purchase-data', label: '구매Data 수동입력', active: active === 'purchase-data', icon: NAV_ICONS.purchaseData })}
+${sidebarNavItem({ href: '/admin/purchase-data', label: '구매Data', active: active === 'purchase-data', icon: NAV_ICONS.purchaseData })}
 </nav>
 <div class="sidebar-account">
 <div class="who-label">로그인 계정</div>
@@ -1638,14 +1638,6 @@ const body = `
 ${managerProgress.map((m) => `<div style="display:flex;align-items:center;gap:8px;padding:7px 12px;border-radius:8px;background:#1c1e2c;font-size:12.5px;"><span style="color:#b2b6ca;">${escapeHtml(m.mgr)}</span><span style="color:#d2cefd;font-weight:600;">${m.done}/${m.total}</span></div>`).join('')}
 </div>
 </div>
-<div class="card" style="margin-bottom:14px;">
-<form method="GET" action="/admin/quote-requests/export-results" style="display:flex;gap:10px;align-items:end;flex-wrap:wrap;">
-<div><label>발주일(선정일) 시작</label><input type="date" name="from"></div>
-<div><label>발주일(선정일) 종료</label><input type="date" name="to"></div>
-<div><button type="submit" class="btn secondary">↓ 구매Data 다운로드(.xlsx)</button></div>
-<div class="hint" style="flex-basis:100%;">기간을 비워두면 전체 기간이 다운로드됩니다. 기준은 발주일(현재는 최종 선정일시로 대체)입니다.</div>
-</form>
-</div>
 <div class="dashboard-layout">
 <div class="dashboard-col dashboard-col-active">
 <h2 class="dashboard-col-title">진행중인 견적요청</h2>
@@ -1698,7 +1690,8 @@ const body = `
 </div>
 <h2>엑셀로 업체 일괄 등록</h2>
 <div class="card">
-<p class="hint"><a href="/admin/vendors/template">↓ 등록 양식 다운로드(.xlsx)</a> — 양식을 내려받아 작성한 뒤 업로드해주세요.</p>
+<p><a class="btn secondary small" href="/admin/vendors/template">↓ 등록 양식 다운로드(.xlsx)</a></p>
+<p class="hint">양식을 내려받아 작성한 뒤 업로드해주세요.</p>
 <form method="POST" action="/admin/vendors/import" enctype="multipart/form-data">
 <label>업체 목록 엑셀(.xlsx)</label>
 <input type="file" name="vendors_excel" accept=".xlsx" required>
@@ -1833,7 +1826,8 @@ const body = `
 ${blocks}
 <div class="card">
 <h3 style="margin-top:0;">엑셀로 카테고리 일괄 추가</h3>
-<p class="hint"><a href="/admin/categories/template">↓ 등록 양식 다운로드(.xlsx)</a> — 양식을 내려받아 작성한 뒤 업로드해주세요.</p>
+<p><a class="btn secondary small" href="/admin/categories/template">↓ 등록 양식 다운로드(.xlsx)</a></p>
+<p class="hint">양식을 내려받아 작성한 뒤 업로드해주세요.</p>
 <form method="POST" action="/admin/categories/import" enctype="multipart/form-data">
 <label>카테고리 목록 엑셀(.xlsx)</label>
 <input type="file" name="categories_excel" accept=".xlsx" required>
@@ -1867,7 +1861,8 @@ const body = `
 </div>
 <h2>엑셀로 사업장 일괄 등록</h2>
 <div class="card">
-<p class="hint"><a href="/admin/sites/template">↓ 등록 양식 다운로드(.xlsx)</a> — 양식을 내려받아 작성한 뒤 업로드해주세요.</p>
+<p><a class="btn secondary small" href="/admin/sites/template">↓ 등록 양식 다운로드(.xlsx)</a></p>
+<p class="hint">양식을 내려받아 작성한 뒤 업로드해주세요.</p>
 <form method="POST" action="/admin/sites/import" enctype="multipart/form-data">
 <label>사업장 목록 엑셀(.xlsx)</label>
 <input type="file" name="sites_excel" accept=".xlsx" required>
@@ -1967,9 +1962,19 @@ const rows = records.map((m) => `
 
 const body = `
 <div class="section-actions">
-<h1>구매Data 수동입력</h1>
+<h1>구매Data</h1>
 </div>
-<p class="hint" style="margin-top:-10px;margin-bottom:16px;">견적관리 시스템을 거치지 않고 진행된 구매건을 여기에 엑셀로 등록해두면, 관리자 대시보드의 "구매Data 다운로드"에 견적 기반 데이터와 함께 합산되어 나갑니다.</p>
+<div class="card" style="margin-bottom:14px;">
+<h3 style="margin:0 0 12px;">구매Data 다운로드</h3>
+<form method="GET" action="/admin/quote-requests/export-results" style="display:flex;gap:10px;align-items:end;flex-wrap:wrap;">
+<div><label>발주일(선정일) 시작</label><input type="date" name="from"></div>
+<div><label>발주일(선정일) 종료</label><input type="date" name="to"></div>
+<div><button type="submit" class="btn secondary">↓ 구매Data 다운로드(.xlsx)</button></div>
+<div class="hint" style="flex-basis:100%;">기간을 비워두면 전체 기간이 다운로드됩니다. 기준은 발주일(현재는 최종 선정일시로 대체)입니다.</div>
+</form>
+</div>
+<h2>견적시스템 미사용 구매건 수동입력</h2>
+<p class="hint" style="margin-top:-8px;margin-bottom:16px;">견적관리 시스템을 거치지 않고 진행된 구매건을 여기에 엑셀로 등록해두면, 위 "구매Data 다운로드"에 견적 기반 데이터와 함께 합산되어 나갑니다.</p>
 <div class="card bulk-btns">
 <a class="btn secondary small" href="/admin/purchase-data/template">↓ 등록 양식 다운로드(.xlsx)</a>
 <form method="POST" action="/admin/purchase-data/import" enctype="multipart/form-data" style="display:inline-flex;gap:8px;align-items:center;margin-left:10px;">
@@ -1987,7 +1992,7 @@ ${records.length === 0 ? '<p class="hint">수동으로 등록된 구매건이 �
 </div>`}
 </div>
 `;
-return layout({ title: '구매Data 수동입력', body, user, flash, active: 'purchase-data' });
+return layout({ title: '구매Data', body, user, flash, active: 'purchase-data' });
 }
 
 function itemCategorySelects(cat1Options, cat2Options, cat3Options, sel1, sel2, sel3) {
@@ -2059,7 +2064,7 @@ ${itemCategorySelects(cat1Options, cat2Options, cat3Options)}
 <button type="button" class="btn secondary small" onclick="addItemRow()">+ 품목 추가</button>
 <div style="margin-top:14px;">
 <label>또는 엑셀로 품목 일괄 등록</label>
-<p class="hint"><a href="/admin/quote-requests/items-template">↓ 등록 양식 다운로드(.xlsx)</a></p>
+<p><a class="btn secondary small" href="/admin/quote-requests/items-template">↓ 등록 양식 다운로드(.xlsx)</a></p>
 <input type="file" name="items_excel" accept=".xlsx">
 <p class="hint">엑셀 업로드 시 위에 직접 입력한 품목과 함께 등록됩니다.</p>
 </div>
@@ -2162,7 +2167,7 @@ ${itemRows}
 <button type="button" class="btn secondary small" onclick="addItemRow()">+ 품목 추가</button>
 <div style="margin-top:14px;">
 <label>또는 엑셀로 품목 추가</label>
-<p class="hint"><a href="/admin/quote-requests/items-template">↓ 등록 양식 다운로드(.xlsx)</a></p>
+<p><a class="btn secondary small" href="/admin/quote-requests/items-template">↓ 등록 양식 다운로드(.xlsx)</a></p>
 <input type="file" name="items_excel" accept=".xlsx">
 <p class="hint">엑셀 업로드 시 기존 품목은 유지되고 새 품목으로 추가됩니다.</p>
 </div>
@@ -2505,7 +2510,8 @@ const body = `
 ${canSubmit ? `
 <div class="card">
 <h3 style="margin-top:0;">엑셀로 견적 일괄 제출</h3>
-<p class="hint"><a href="/vendor/quote-requests/${qr.id}/submissions-template">↓ 이 견적요청의 제출 양식 다운로드(.xlsx)</a> — 요청 품목명이 미리 채워져 있습니다. 단가 등만 입력해서 올려주세요.</p>
+<p><a class="btn secondary small" href="/vendor/quote-requests/${qr.id}/submissions-template">↓ 이 견적요청의 제출 양식 다운로드(.xlsx)</a></p>
+<p class="hint">요청 품목명이 미리 채워져 있습니다. 단가 등만 입력해서 올려주세요.</p>
 <form method="POST" action="/vendor/quote-requests/${qr.id}/submissions/import" enctype="multipart/form-data">
 <label>견적 엑셀(.xlsx)</label>
 <input type="file" name="submissions_excel" accept=".xlsx" required>
