@@ -765,6 +765,19 @@ if (!qiCols.includes('category1')) await db.execute("ALTER TABLE quote_items ADD
 if (!qiCols.includes('category2')) await db.execute("ALTER TABLE quote_items ADD COLUMN category2 TEXT DEFAULT ''");
 if (!qiCols.includes('category3')) await db.execute("ALTER TABLE quote_items ADD COLUMN category3 TEXT DEFAULT ''");
 
+// 규격을 규격1/2/3으로 나눠 입력할 수 있도록 spec2/spec3 컬럼 추가(기존 spec 컬럼이 규격1 역할).
+// 관리자가 견적요청 품목을 등록할 때 요청품 옆에 미리 알고 있는 대체 가능 품목도 같이 등록할 수 있도록
+// item_kind(requested/substitute)와 alt_of_name(대체 대상인 원래 품목명) 컬럼도 함께 추가.
+if (!qiCols.includes('spec2')) await db.execute("ALTER TABLE quote_items ADD COLUMN spec2 TEXT DEFAULT ''");
+if (!qiCols.includes('spec3')) await db.execute("ALTER TABLE quote_items ADD COLUMN spec3 TEXT DEFAULT ''");
+if (!qiCols.includes('item_kind')) await db.execute("ALTER TABLE quote_items ADD COLUMN item_kind TEXT DEFAULT 'requested'");
+if (!qiCols.includes('alt_of_name')) await db.execute("ALTER TABLE quote_items ADD COLUMN alt_of_name TEXT DEFAULT ''");
+
+// submissions(업체 제출 견적)도 동일하게 규격1/2/3으로 나눈다.
+const subCols = (await db.prepare("PRAGMA table_info(submissions)").all()).map((c) => c.name);
+if (!subCols.includes('spec2')) await db.execute("ALTER TABLE submissions ADD COLUMN spec2 TEXT DEFAULT ''");
+if (!subCols.includes('spec3')) await db.execute("ALTER TABLE submissions ADD COLUMN spec3 TEXT DEFAULT ''");
+
 if (vendorCols.includes('category') && vendorCols.includes('category1')) {
 // 예전 단일 category 값을 category1로 옮겨준다 (비어있는 경우에만)
 await db.execute("UPDATE vendors SET category1 = category WHERE (category1 IS NULL OR category1 = '') AND category IS NOT NULL AND category <> ''");
@@ -1473,6 +1486,11 @@ return String(str)
 .replace(/>/g, '&gt;')
 .replace(/"/g, '&quot;')
 .replace(/'/g, '&#39;');
+}
+
+// 규격1/규격2/규격3을 표시/출력용 문자열 하나로 합친다(비어있는 항목은 건너뜀).
+function combineSpec(spec1, spec2, spec3) {
+return [spec1, spec2, spec3].map((v) => (v || '').toString().trim()).filter(Boolean).join(' / ');
 }
 
 function money(n) {
@@ -2249,13 +2267,18 @@ ${siteOptions}
 <div id="items-wrap">
 <div class="form-row item-row">
 <div><label>품목명</label><input type="text" name="item_name[]"></div>
-<div><label>규격</label><input type="text" name="item_spec[]"></div>
+<div><label>규격1</label><input type="text" name="item_spec[]"></div>
+<div><label>규격2</label><input type="text" name="item_spec2[]"></div>
+<div><label>규격3</label><input type="text" name="item_spec3[]"></div>
 <div><label>수량</label><input type="number" name="item_qty[]" value="1" min="1"></div>
 <div><label>단위</label><input type="text" name="item_unit[]" placeholder="예) 포, 톤, EA"></div>
+<div><label>구분</label><select name="item_kind[]"><option value="requested">요청품</option><option value="substitute">대체품</option></select></div>
+<div><label>대체 대상 품목명<span class="hint">(대체품인 경우만)</span></label><input type="text" name="item_alt_of[]" placeholder="원래 요청품 품목명"></div>
 ${itemCategorySelects(cat1Options, cat2Options, cat3Options)}
 </div>
 </div>
 <p class="hint">품목명은 직접 입력하거나 엑셀 업로드만으로 등록해도 됩니다(둘 다 비워두면 품목 없이 견적요청만 생성됩니다).</p>
+<p class="hint">'구분'을 대체품으로 두면, 업체가 견적을 넣을 때 이미 알고 있는 대체 가능 품목을 요청품과 함께 보여줄 수 있습니다. '대체 대상 품목명'에는 이 대체품이 대신할 원래 요청품의 품목명을 똑같이 입력하세요.</p>
 <p class="hint">과목1/2/3은 나중에 구매Data를 다운로드해서 구매 실적 보고서를 만들 때 품목 분류로 쓰입니다. 목록에 없는 값이 필요하면 <a href="/admin/categories" target="_blank">카테고리 관리</a>에서 먼저 추가해주세요.</p>
 <button type="button" class="btn secondary small" onclick="addItemRow()">+ 품목 추가</button>
 <div style="margin-top:14px;">
@@ -2280,6 +2303,7 @@ row.querySelectorAll('input').forEach(i => { if (i.name === 'item_qty[]') i.valu
 row.querySelectorAll('select').forEach(s => { s.selectedIndex = 0; });
 wrap.appendChild(row);
 }
+
 </script>
 `;
 return layout({ title: '새 견적요청', body, user, flash, active: 'dashboard' });
@@ -2314,9 +2338,13 @@ const itemRows = items.map((it) => `
 <div class="form-row item-row">
 <input type="hidden" name="item_id[]" value="${it.id}">
 <div><label>품목명</label><input type="text" name="item_name[]" required value="${escapeHtml(it.item_name)}"></div>
-<div><label>규격</label><input type="text" name="item_spec[]" value="${escapeHtml(it.spec || '')}"></div>
+<div><label>규격1</label><input type="text" name="item_spec[]" value="${escapeHtml(it.spec || '')}"></div>
+<div><label>규격2</label><input type="text" name="item_spec2[]" value="${escapeHtml(it.spec2 || '')}"></div>
+<div><label>규격3</label><input type="text" name="item_spec3[]" value="${escapeHtml(it.spec3 || '')}"></div>
 <div><label>수량</label><input type="number" name="item_qty[]" value="${it.qty}" min="1"></div>
 <div><label>단위</label><input type="text" name="item_unit[]" value="${escapeHtml(it.unit || '')}"></div>
+<div><label>구분</label><select name="item_kind[]"><option value="requested" ${it.item_kind !== 'substitute' ? 'selected' : ''}>요청품</option><option value="substitute" ${it.item_kind === 'substitute' ? 'selected' : ''}>대체품</option></select></div>
+<div><label>대체 대상 품목명<span class="hint">(대체품인 경우만)</span></label><input type="text" name="item_alt_of[]" value="${escapeHtml(it.alt_of_name || '')}" placeholder="원래 요청품 품목명"></div>
 ${itemCategorySelects(cat1Options, cat2Options, cat3Options, it.category1 || '', it.category2 || '', it.category3 || '')}
 <div style="align-self:end;"><label>&nbsp;</label><label style="display:inline;margin:0;"><input type="checkbox" name="item_remove[]" value="${it.id}"> 이 품목 삭제</label></div>
 </div>`).join('');
@@ -2325,9 +2353,13 @@ const blankRow = `
 <div class="form-row item-row">
 <input type="hidden" name="item_id[]" value="">
 <div><label>품목명</label><input type="text" name="item_name[]"></div>
-<div><label>규격</label><input type="text" name="item_spec[]"></div>
+<div><label>규격1</label><input type="text" name="item_spec[]"></div>
+<div><label>규격2</label><input type="text" name="item_spec2[]"></div>
+<div><label>규격3</label><input type="text" name="item_spec3[]"></div>
 <div><label>수량</label><input type="number" name="item_qty[]" value="1" min="1"></div>
 <div><label>단위</label><input type="text" name="item_unit[]"></div>
+<div><label>구분</label><select name="item_kind[]"><option value="requested">요청품</option><option value="substitute">대체품</option></select></div>
+<div><label>대체 대상 품목명<span class="hint">(대체품인 경우만)</span></label><input type="text" name="item_alt_of[]" placeholder="원래 요청품 품목명"></div>
 ${itemCategorySelects(cat1Options, cat2Options, cat3Options)}
 <div style="align-self:end;"><label>&nbsp;</label><span class="hint">신규 품목</span></div>
 </div>`;
@@ -2397,7 +2429,7 @@ return `
 <td>${typeBadge}${isLowest ? '<span class="badge lowest">최저가</span>' : ''}${isSelected ? '<span class="badge selected">선정됨</span>' : ''}</td>
 <td class="wrap">${escapeHtml(s.vendor_name)}</td>
 <td class="wrap">${escapeHtml(s.product_name)}</td>
-<td class="wrap">${escapeHtml(s.spec)}</td>
+<td class="wrap">${escapeHtml(combineSpec(s.spec, s.spec2, s.spec3))}</td>
 <td>${s.qty}${escapeHtml(s.unit)}</td>
 <td>${money(s.unit_price)}</td>
 <td>${money(total)}</td>
@@ -2444,7 +2476,7 @@ const rows = subs
 return `
 <div class="card">
 <div class="section-actions">
-<h3 style="margin:0;">${escapeHtml(it.item_name)} <span class="hint">(${escapeHtml(it.spec || '')} · ${it.qty}${escapeHtml(it.unit || '')})</span> ${[it.category1, it.category2, it.category3].filter(Boolean).length ? `<span class="hint">[${escapeHtml([it.category1, it.category2, it.category3].filter(Boolean).join(' / '))}]</span>` : ''}</h3>
+<h3 style="margin:0;">${escapeHtml(it.item_name)} ${it.item_kind === 'substitute' ? `<span class="badge substitute">대체품${it.alt_of_name ? ` (원본: ${escapeHtml(it.alt_of_name)})` : ''}</span>` : ''} <span class="hint">(${escapeHtml(combineSpec(it.spec, it.spec2, it.spec3))} · ${it.qty}${escapeHtml(it.unit || '')})</span> ${[it.category1, it.category2, it.category3].filter(Boolean).length ? `<span class="hint">[${escapeHtml([it.category1, it.category2, it.category3].filter(Boolean).join(' / '))}]</span>` : ''}</h3>
 ${sel ? '<span class="badge selected">선정 완료</span>' : '<span class="hint">미선정</span>'}
 </div>
 ${subs.length === 0 ? '<p class="hint">아직 제출된 견적이 없습니다.</p>' : `
@@ -2619,7 +2651,7 @@ const req0 = requestedMine[0] || null;
 const subBlocks = subsMine.map((s) => `
 <div class="card" style="background:#fdf7ec;margin-bottom:8px;">
 <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;">
-<div style="font-size:14px;"><span class="badge substitute">대체품</span> ${escapeHtml(s.product_name)} · ${escapeHtml(s.spec || '')} · ${s.qty}${escapeHtml(s.unit || '')} · ${money(s.unit_price)} · 납기 ${escapeHtml(s.delivery_date || '-')}</div>
+<div style="font-size:14px;"><span class="badge substitute">대체품</span> ${escapeHtml(s.product_name)} · ${escapeHtml(combineSpec(s.spec, s.spec2, s.spec3))} · ${s.qty}${escapeHtml(s.unit || '')} · ${money(s.unit_price)} · 납기 ${escapeHtml(s.delivery_date || '-')}</div>
 ${canSubmit ? `<form method="POST" action="/vendor/quote-requests/${qr.id}/submissions/${s.id}/delete" class="inline" onsubmit="return confirm('이 대체품 제안을 삭제할까요?');"><button type="submit" class="btn small danger">삭제</button></form>` : ''}
 </div>
 ${s.substitute_reason ? `<p class="hint" style="margin:6px 0 0;">제안 사유: ${escapeHtml(s.substitute_reason)}</p>` : ''}
@@ -2632,7 +2664,9 @@ ${canSubmit ? `
 <input type="hidden" name="submission_id" value="${s.id}">
 <div class="form-row">
 <div><label>대체품명</label><input type="text" name="product_name" value="${escapeHtml(s.product_name)}" required></div>
-<div><label>규격</label><input type="text" name="spec" value="${escapeHtml(s.spec || '')}"></div>
+<div><label>규격1</label><input type="text" name="spec" value="${escapeHtml(s.spec || '')}"></div>
+<div><label>규격2</label><input type="text" name="spec2" value="${escapeHtml(s.spec2 || '')}"></div>
+<div><label>규격3</label><input type="text" name="spec3" value="${escapeHtml(s.spec3 || '')}"></div>
 <div><label>수량</label><input type="number" name="qty" value="${s.qty}" min="1" required></div>
 <div><label>단위</label><input type="text" name="unit" value="${escapeHtml(s.unit || '')}"></div>
 </div>
@@ -2649,7 +2683,7 @@ ${canSubmit ? `
 
 return `
 <div class="card">
-<h3 style="margin-top:0;">${escapeHtml(it.item_name)} <span class="hint">(${escapeHtml(it.spec || '')} · 요청수량 ${it.qty}${escapeHtml(it.unit || '')})</span></h3>
+<h3 style="margin-top:0;">${escapeHtml(it.item_name)} ${it.item_kind === 'substitute' ? `<span class="badge substitute">대체품${it.alt_of_name ? ` (원본: ${escapeHtml(it.alt_of_name)})` : ''}</span>` : ''} <span class="hint">(${escapeHtml(combineSpec(it.spec, it.spec2, it.spec3))} · 요청수량 ${it.qty}${escapeHtml(it.unit || '')})</span></h3>
 ${canSubmit ? `
 <form method="POST" action="/vendor/quote-requests/${qr.id}/submissions">
 <input type="hidden" name="quote_item_id" value="${it.id}">
@@ -2657,7 +2691,9 @@ ${canSubmit ? `
 ${req0 ? `<input type="hidden" name="submission_id" value="${req0.id}">` : ''}
 <div class="form-row">
 <div><label>제안 품목명</label><input type="text" name="product_name" value="${escapeHtml(req0 ? req0.product_name : it.item_name)}" required></div>
-<div><label>규격</label><input type="text" name="spec" value="${escapeHtml(req0 ? (req0.spec || '') : (it.spec || ''))}"></div>
+<div><label>규격1</label><input type="text" name="spec" value="${escapeHtml(req0 ? (req0.spec || '') : (it.spec || ''))}"></div>
+<div><label>규격2</label><input type="text" name="spec2" value="${escapeHtml(req0 ? (req0.spec2 || '') : (it.spec2 || ''))}"></div>
+<div><label>규격3</label><input type="text" name="spec3" value="${escapeHtml(req0 ? (req0.spec3 || '') : (it.spec3 || ''))}"></div>
 <div><label>수량</label><input type="number" name="qty" value="${req0 ? req0.qty : it.qty}" min="1" required></div>
 <div><label>단위</label><input type="text" name="unit" value="${escapeHtml(req0 ? (req0.unit || '') : (it.unit || ''))}"></div>
 </div>
@@ -2681,7 +2717,9 @@ ${canSubmit ? `
 <input type="hidden" name="type" value="substitute">
 <div class="form-row">
 <div><label>대체품명</label><input type="text" name="product_name" required></div>
-<div><label>규격</label><input type="text" name="spec"></div>
+<div><label>규격1</label><input type="text" name="spec"></div>
+<div><label>규격2</label><input type="text" name="spec2"></div>
+<div><label>규격3</label><input type="text" name="spec3"></div>
 <div><label>수량</label><input type="number" name="qty" value="${it.qty}" min="1" required></div>
 <div><label>단위</label><input type="text" name="unit"></div>
 </div>
@@ -2976,6 +3014,8 @@ qi.category3 AS category3,
 v.name AS vendor_name,
 sub.product_name AS product_name,
 sub.spec AS sub_spec,
+sub.spec2 AS sub_spec2,
+sub.spec3 AS sub_spec3,
 sub.qty AS sub_qty,
 sub.unit AS sub_unit,
 sub.unit_price AS unit_price,
@@ -3009,7 +3049,7 @@ const siteBare = (r.site_name || '').replace(/^힐마루\s*/, '');
 return [
 '', year, siteBare, '', r.category1 || '', r.category2 || '', r.category3 || '', r.draft_no || '', r.draft_title || r.request_title, r.vendor_name,
 orderDate, r.received_date || r.delivery_date || '', r.sub_type === 'substitute' ? '대체품' : '요청품',
-r.product_name, r.sub_spec || '', r.sub_qty, r.unit_price, r.total_price, r.sub_qty, r.sub_unit || '',
+r.product_name, combineSpec(r.sub_spec, r.sub_spec2, r.sub_spec3), r.sub_qty, r.unit_price, r.total_price, r.sub_qty, r.sub_unit || '',
 r.payment_date || '', '', r.payment_recipient || '', r.selection_reason || r.substitute_reason || '',
 ];
 });
@@ -4320,8 +4360,12 @@ router.get('/admin/quote-requests/items-template', (req, res) => {
 const u = requireLogin('admin')(req, res);
 if (!u) return;
 sendXlsxTemplate(res, '견적요청_품목_일괄등록_양식.xlsx',
-['품목명', '규격', '수량', '단위', '과목1', '과목2', '과목3'],
-[['예) 비료', '20kg', '10', '포', '코스', '저장품', '']]
+['품목명', '구분(요청품/대체품)', '제안품목명(대체품인 경우 실제 등록될 품목명)', '규격1', '규격2', '규격3', '수량', '단위', '과목1', '과목2', '과목3'],
+[
+['예) 비료', '요청품', '', '20kg', '', '', '10', '포', '코스', '저장품', ''],
+['비료', '대체품', '대체 비료(제안 제품명)', '20kg', '', '', '10', '포', '코스', '저장품', ''],
+],
+[{ col: 1, list: ['요청품', '대체품'], firstRow: 2, lastRow: 3 }]
 );
 });
 
@@ -4330,7 +4374,9 @@ if (v === undefined || v === null) return [];
 return Array.isArray(v) ? v : [v];
 }
 
-// 업로드된 xlsx에서 품목 목록(품목명/규격/수량/단위)을 뽑아온다. 1행은 머릿글로 간주하고 건너뜀.
+// 업로드된 xlsx에서 품목 목록(품목명/구분/제안품목명/규격1~3/수량/단위/카테고리)을 뽑아온다. 1행은 머릿글로 간주하고 건너뜀.
+// '대체품'인 경우 품목명 칸에는 대체 대상이 되는 원래 요청품 품목명을 넣고, 제안품목명 칸에 실제로 등록될 품목명을 넣는다
+// (업체가 견적 일괄 제출할 때 쓰는 양식과 같은 방식).
 function parseItemsExcel(fileObj) {
 if (!fileObj || !fileObj.data || !fileObj.data.length) return [];
 let rows;
@@ -4344,11 +4390,18 @@ const out = [];
 for (let i = 1; i < rows.length; i++) { // 0행(머릿글) 스킵
 const r = rows[i];
 if (xlsxRowIsEmpty(r)) continue;
-const name = (r[0] || '').trim();
-if (!name) continue;
+const nameRaw = (r[0] || '').trim();
+if (!nameRaw) continue;
+const kind = String(r[1] || '').includes('대체') ? 'substitute' : 'requested';
+const proposedName = (r[2] || '').trim();
+const finalName = kind === 'substitute' ? (proposedName || nameRaw) : nameRaw;
 out.push({
-name, spec: (r[1] || '').trim(), qty: Number(r[2]) || 1, unit: (r[3] || '').trim(),
-category1: (r[4] || '').trim(), category2: (r[5] || '').trim(), category3: (r[6] || '').trim(),
+name: finalName,
+kind,
+altOf: kind === 'substitute' ? nameRaw : '',
+spec: (r[3] || '').trim(), spec2: (r[4] || '').trim(), spec3: (r[5] || '').trim(),
+qty: Number(r[6]) || 1, unit: (r[7] || '').trim(),
+category1: (r[8] || '').trim(), category2: (r[9] || '').trim(), category3: (r[10] || '').trim(),
 });
 }
 return out;
@@ -4373,18 +4426,23 @@ const qrId = info.lastInsertRowid;
 
 const names = toArray(body['item_name[]']);
 const specs = toArray(body['item_spec[]']);
+const spec2s = toArray(body['item_spec2[]']);
+const spec3s = toArray(body['item_spec3[]']);
 const qtys = toArray(body['item_qty[]']);
 const units = toArray(body['item_unit[]']);
 const cat1s = toArray(body['item_category1[]']);
 const cat2s = toArray(body['item_category2[]']);
 const cat3s = toArray(body['item_category3[]']);
-const insertItem = db.prepare('INSERT INTO quote_items (quote_request_id, item_name, spec, qty, unit, category1, category2, category3) VALUES (?, ?, ?, ?, ?, ?, ?, ?)');
+const kinds = toArray(body['item_kind[]']);
+const altOfs = toArray(body['item_alt_of[]']);
+const insertItem = db.prepare('INSERT INTO quote_items (quote_request_id, item_name, spec, spec2, spec3, qty, unit, category1, category2, category3, item_kind, alt_of_name) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)');
 for (let i = 0; i < names.length; i++) {
 if (!names[i] || !names[i].trim()) continue;
-await insertItem.run(qrId, names[i].trim(), specs[i] || '', Number(qtys[i]) || 1, units[i] || '', cat1s[i] || '', cat2s[i] || '', cat3s[i] || '');
+const kind = kinds[i] === 'substitute' ? 'substitute' : 'requested';
+await insertItem.run(qrId, names[i].trim(), specs[i] || '', spec2s[i] || '', spec3s[i] || '', Number(qtys[i]) || 1, units[i] || '', cat1s[i] || '', cat2s[i] || '', cat3s[i] || '', kind, kind === 'substitute' ? (altOfs[i] || '').trim() : '');
 }
 for (const it of parseItemsExcel(files.items_excel)) {
-await insertItem.run(qrId, it.name, it.spec, it.qty, it.unit, it.category1 || '', it.category2 || '', it.category3 || '');
+await insertItem.run(qrId, it.name, it.spec, it.spec2, it.spec3, it.qty, it.unit, it.category1 || '', it.category2 || '', it.category3 || '', it.kind, it.altOf || '');
 }
 
 const viewIds = new Set(toArray(body.assign_view).map(Number));
@@ -4498,7 +4556,7 @@ const poItems = [];
 for (const it of items) {
 const { selected } = await computeSelectionForItem(it.id);
 if (selected && selected.vendor_id === vendorId) {
-poItems.push({ name: selected.product_name, spec: selected.spec, qty: selected.qty, unit: selected.unit, unitPrice: selected.unit_price });
+poItems.push({ name: selected.product_name, spec: combineSpec(selected.spec, selected.spec2, selected.spec3), qty: selected.qty, unit: selected.unit, unitPrice: selected.unit_price });
 }
 }
 if (poItems.length === 0) { res.writeHead(404); return res.end('이 업체로 최종 선정된 품목이 없습니다.'); }
@@ -4588,15 +4646,19 @@ UPDATE quote_requests SET title = ?, submission_deadline = ?, requested_delivery
 const itemIds = toArray(body['item_id[]']);
 const names = toArray(body['item_name[]']);
 const specs = toArray(body['item_spec[]']);
+const spec2s = toArray(body['item_spec2[]']);
+const spec3s = toArray(body['item_spec3[]']);
 const qtys = toArray(body['item_qty[]']);
 const units = toArray(body['item_unit[]']);
 const cat1s = toArray(body['item_category1[]']);
 const cat2s = toArray(body['item_category2[]']);
 const cat3s = toArray(body['item_category3[]']);
+const kinds = toArray(body['item_kind[]']);
+const altOfs = toArray(body['item_alt_of[]']);
 const removeIds = new Set(toArray(body['item_remove[]']).map(Number));
 
-const updateItem = db.prepare('UPDATE quote_items SET item_name=?, spec=?, qty=?, unit=?, category1=?, category2=?, category3=? WHERE id=? AND quote_request_id=?');
-const insertItem = db.prepare('INSERT INTO quote_items (quote_request_id, item_name, spec, qty, unit, category1, category2, category3) VALUES (?, ?, ?, ?, ?, ?, ?, ?)');
+const updateItem = db.prepare('UPDATE quote_items SET item_name=?, spec=?, spec2=?, spec3=?, qty=?, unit=?, category1=?, category2=?, category3=?, item_kind=?, alt_of_name=? WHERE id=? AND quote_request_id=?');
+const insertItem = db.prepare('INSERT INTO quote_items (quote_request_id, item_name, spec, spec2, spec3, qty, unit, category1, category2, category3, item_kind, alt_of_name) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)');
 const deleteItem = db.prepare('DELETE FROM quote_items WHERE id=? AND quote_request_id=?');
 
 for (let i = 0; i < names.length; i++) {
@@ -4606,14 +4668,16 @@ await deleteItem.run(itemId, id);
 continue;
 }
 if (!names[i] || !names[i].trim()) continue;
+const kind = kinds[i] === 'substitute' ? 'substitute' : 'requested';
+const altOf = kind === 'substitute' ? (altOfs[i] || '').trim() : '';
 if (itemId) {
-await updateItem.run(names[i].trim(), specs[i] || '', Number(qtys[i]) || 1, units[i] || '', cat1s[i] || '', cat2s[i] || '', cat3s[i] || '', itemId, id);
+await updateItem.run(names[i].trim(), specs[i] || '', spec2s[i] || '', spec3s[i] || '', Number(qtys[i]) || 1, units[i] || '', cat1s[i] || '', cat2s[i] || '', cat3s[i] || '', kind, altOf, itemId, id);
 } else {
-await insertItem.run(id, names[i].trim(), specs[i] || '', Number(qtys[i]) || 1, units[i] || '', cat1s[i] || '', cat2s[i] || '', cat3s[i] || '');
+await insertItem.run(id, names[i].trim(), specs[i] || '', spec2s[i] || '', spec3s[i] || '', Number(qtys[i]) || 1, units[i] || '', cat1s[i] || '', cat2s[i] || '', cat3s[i] || '', kind, altOf);
 }
 }
 for (const it of parseItemsExcel(files.items_excel)) {
-await insertItem.run(id, it.name, it.spec, it.qty, it.unit, it.category1 || '', it.category2 || '', it.category3 || '');
+await insertItem.run(id, it.name, it.spec, it.spec2, it.spec3, it.qty, it.unit, it.category1 || '', it.category2 || '', it.category3 || '', it.kind, it.altOf || '');
 }
 
 // ---- 업체 배정 동기화 (기존 배정을 지우고 다시 반영) ----
@@ -4716,7 +4780,7 @@ existing = await db.prepare("SELECT * FROM submissions WHERE quote_item_id=? AND
 }
 
 const vals = [
-body.product_name || '', body.spec || '', Number(body.qty) || 1, body.unit || '',
+body.product_name || '', body.spec || '', body.spec2 || '', body.spec3 || '', Number(body.qty) || 1, body.unit || '',
 Number(body.unit_price) || 0, body.delivery_date || null, body.manufacturer || '',
 type === 'substitute' ? (body.substitute_reason || '') : '', type === 'requested' ? (body.note || '') : '',
 new Date().toISOString(),
@@ -4724,13 +4788,13 @@ new Date().toISOString(),
 
 if (existing) {
 await db.prepare(`
-UPDATE submissions SET product_name=?, spec=?, qty=?, unit=?, unit_price=?, delivery_date=?, manufacturer=?, substitute_reason=?, note=?, submitted_at=?
+UPDATE submissions SET product_name=?, spec=?, spec2=?, spec3=?, qty=?, unit=?, unit_price=?, delivery_date=?, manufacturer=?, substitute_reason=?, note=?, submitted_at=?
 WHERE id = ?
 `).run(...vals, existing.id);
 } else {
 await db.prepare(`
-INSERT INTO submissions (quote_item_id, vendor_id, type, product_name, spec, qty, unit, unit_price, delivery_date, manufacturer, substitute_reason, note, submitted_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+INSERT INTO submissions (quote_item_id, vendor_id, type, product_name, spec, spec2, spec3, qty, unit, unit_price, delivery_date, manufacturer, substitute_reason, note, submitted_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 `).run(itemId, u.userId, type, ...vals);
 }
 
@@ -4768,15 +4832,15 @@ const id = Number(req.params.id);
 const assign = await db.prepare('SELECT * FROM vendor_assignments WHERE quote_request_id = ? AND vendor_id = ?').get(id, u.userId);
 if (!assign) { res.writeHead(403); return res.end('접근 권한이 없습니다.'); }
 const items = await db.prepare('SELECT * FROM quote_items WHERE quote_request_id = ?').all(id);
-const rows = items.map((it) => [it.item_name, '요청품', it.item_name, it.spec || '', String(it.qty), it.unit || '', '', '', '', '']);
+const rows = items.map((it) => [it.item_name, '요청품', it.item_name, it.spec || '', it.spec2 || '', it.spec3 || '', String(it.qty), it.unit || '', '', '', '', '']);
 const exampleFirstName = items[0] ? items[0].item_name : '비료';
 const exampleRow = [
 `(예시-실제로 반영되지 않는 샘플행. 참고 후 삭제하거나 그대로 두세요) ${exampleFirstName}`,
-'대체품', `${exampleFirstName} 대신 제안할 실제 제품명`, '규격 예시', '10', '포', '14000', '2026-09-01', '제조사명', '대체 제안 사유(선택)',
+'대체품', `${exampleFirstName} 대신 제안할 실제 제품명`, '규격1 예시', '규격2 예시', '규격3 예시', '10', '포', '14000', '2026-09-01', '제조사명', '대체 제안 사유(선택)',
 ];
-const finalRows = rows.length ? [...rows, exampleRow] : [['예) 비료', '요청품', '비료', '20kg', '10', '포', '15000', '2026-09-01', '한국비료', ''], exampleRow];
+const finalRows = rows.length ? [...rows, exampleRow] : [['예) 비료', '요청품', '비료', '20kg', '', '', '10', '포', '15000', '2026-09-01', '한국비료', ''], exampleRow];
 sendXlsxTemplate(res, '견적_일괄제출_양식.xlsx',
-['품목명', '구분(요청품/대체품)', '제안품목명', '규격', '수량', '단위', '단가', '납기일자', '제조사', '비고/제안사유'],
+['품목명', '구분(요청품/대체품)', '제안품목명', '규격1', '규격2', '규격3', '수량', '단위', '단가', '납기일자', '제조사', '비고/제안사유'],
 finalRows,
 [{ col: 1, list: ['요청품', '대체품'], firstRow: 2, lastRow: finalRows.length + 1 }]
 );
@@ -4805,18 +4869,18 @@ return redirect(res, `/vendor/quote-requests/${id}`);
 }
 
 const insertSub = db.prepare(`
-INSERT INTO submissions (quote_item_id, vendor_id, type, product_name, spec, qty, unit, unit_price, delivery_date, manufacturer, substitute_reason, note, submitted_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+INSERT INTO submissions (quote_item_id, vendor_id, type, product_name, spec, spec2, spec3, qty, unit, unit_price, delivery_date, manufacturer, substitute_reason, note, submitted_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 `);
 const updateSub = db.prepare(`
-UPDATE submissions SET product_name=?, spec=?, qty=?, unit=?, unit_price=?, delivery_date=?, manufacturer=?, substitute_reason=?, note=?, submitted_at=?
+UPDATE submissions SET product_name=?, spec=?, spec2=?, spec3=?, qty=?, unit=?, unit_price=?, delivery_date=?, manufacturer=?, substitute_reason=?, note=?, submitted_at=?
 WHERE id = ?
 `);
 let created = 0, updated = 0, skipped = 0;
 for (let i = 1; i < rows.length; i++) {
 const r = rows[i];
 if (xlsxRowIsEmpty(r)) continue;
-const [itemNameRaw, typeRaw, productNameRaw, spec, qty, unit, unitPrice, deliveryDateRaw, manufacturer, note] = r;
+const [itemNameRaw, typeRaw, productNameRaw, spec, spec2, spec3, qty, unit, unitPrice, deliveryDateRaw, manufacturer, note] = r;
 const item = itemByName.get(String(itemNameRaw || '').trim().toLowerCase());
 if (!item) { skipped++; continue; }
 const type = String(typeRaw || '').includes('대체') ? 'substitute' : 'requested';
@@ -4832,7 +4896,7 @@ existing = await db.prepare("SELECT id FROM submissions WHERE quote_item_id=? AN
 }
 
 const vals = [
-productName, spec || '', Number(qty) || 1, unit || '',
+productName, spec || '', spec2 || '', spec3 || '', Number(qty) || 1, unit || '',
 Number(unitPrice) || 0, deliveryDate, manufacturer || '',
 type === 'substitute' ? (note || '') : '', type === 'requested' ? (note || '') : '',
 new Date().toISOString(),
