@@ -663,6 +663,14 @@ substitute_reason TEXT DEFAULT '',
 note TEXT DEFAULT '',
 submitted_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS quote_attachments (
+id INTEGER PRIMARY KEY AUTOINCREMENT,
+quote_request_id INTEGER NOT NULL REFERENCES quote_requests(id) ON DELETE CASCADE,
+vendor_id INTEGER NOT NULL REFERENCES vendors(id) ON DELETE CASCADE,
+file_name TEXT NOT NULL,
+stored_name TEXT NOT NULL,
+uploaded_at TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS final_selections (
 quote_item_id INTEGER PRIMARY KEY REFERENCES quote_items(id) ON DELETE CASCADE,
 submission_id INTEGER NOT NULL REFERENCES submissions(id) ON DELETE CASCADE,
@@ -2453,7 +2461,7 @@ ${isSelected ? '<span class="hint">현재 선정됨</span>' : (isLowest ? `
 </tr>`;
 }
 
-function quoteRequestDetailPage({ user, qr, items, assignments, vendorsByCategory, submissionsByItem, selections, buyerLabels, hasSite, onsiteContacts, flash }) {
+function quoteRequestDetailPage({ user, qr, items, assignments, vendorsByCategory, submissionsByItem, selections, buyerLabels, hasSite, onsiteContacts, attachments, flash }) {
 const totalItems = items.length;
 const selectedCount = items.filter((it) => selections[it.id]).length;
 const selectedAmount = items.reduce((sum, it) => {
@@ -2515,6 +2523,23 @@ const body = `
 ${progressBar(selectedCount, totalItems)}
 ${selectedCount === totalItems && totalItems > 0 ? '<div class="flash success" style="margin-top:10px;">모든 품목의 최종 선정이 완료되었습니다.</div>' : ''}
 </div>
+${(attachments || []).length > 0 ? `
+<div class="card">
+<h3 style="margin-top:0;">업체가 첨부한 견적서 파일</h3>
+<div class="table-scroll">
+<table class="table-wide">
+<thead><tr><th>업체</th><th>파일명</th><th>업로드 시각</th><th></th></tr></thead>
+<tbody>
+${attachments.map((a) => `<tr>
+<td class="wrap">${escapeHtml(a.vendor_name)}</td>
+<td class="wrap">${escapeHtml(a.file_name)}</td>
+<td>${escapeHtml((a.uploaded_at || '').slice(0, 16).replace('T', ' '))}</td>
+<td><a class="btn small ghost" href="/quote-requests/${qr.id}/attachments/${a.id}/file" target="_blank">다운로드</a></td>
+</tr>`).join('')}
+</tbody>
+</table>
+</div>
+</div>` : ''}
 <h2>품목별 견적 비교</h2>
 ${itemsBlocks}
 ${selectedCount > 0 ? `
@@ -2549,7 +2574,17 @@ return `<tr>
 </div>` : ''}
 ${selectedCount > 0 ? `
 <h2>업체별 발주서 생성</h2>
-${!hasSite ? `<div class="card"><p class="hint">발주서를 생성하려면 먼저 <a href="/admin/quote-requests/${qr.id}/edit">견적요청 수정</a>에서 사업장을 지정해주세요.</p></div>` : (() => {
+${!hasSite ? `<div class="card"><p class="hint">발주서를 생성하려면 먼저 <a href="/admin/quote-requests/${qr.id}/edit">견적요청 수정</a>에서 사업장을 지정해주세요.</p></div>` : `
+<div class="card">
+<div style="display:flex;gap:10px;align-items:end;flex-wrap:wrap;">
+<div><label>발주일자 일괄 설정</label><input type="date" id="bulk-po-orderdate"></div>
+<div><button type="button" class="btn small secondary" onclick="applyBulkDate('bulk-po-orderdate','.po-orderdate-input')">↓ 전체 발주서에 적용</button></div>
+<div><label>입고 요청일자 일괄 설정</label><input type="date" id="bulk-po-deliverydate"></div>
+<div><button type="button" class="btn small secondary" onclick="applyBulkDate('bulk-po-deliverydate','.po-deliverydate-input')">↓ 전체 발주서에 적용</button></div>
+</div>
+<p class="hint" style="margin:6px 0 0;">업체가 많을 때 아래 업체별 발주서 폼의 날짜를 한 번에 채워줍니다. 특정 업체만 다르게 하려면 그 업체 폼의 날짜만 다시 고치면 됩니다. (다운로드는 여전히 업체별로 각각 눌러야 합니다.)</p>
+</div>
+${(() => {
 const groups = {};
 items.filter((it) => selections[it.id]).forEach((it) => {
 const s = selections[it.id];
@@ -2568,8 +2603,8 @@ return `
 <ul style="margin:4px 0 12px 20px;padding:0;font-size:14px;">${itemRows}</ul>
 <form method="GET" action="/admin/quote-requests/${qr.id}/po/${vid}" style="display:flex;gap:10px;align-items:end;flex-wrap:wrap;">
 <div><label>구매담당</label><select name="buyer">${buyerOpts}</select></div>
-<div><label>발주일자</label><input type="date" name="orderDate" value="${today}"></div>
-<div><label>입고 요청일자</label><input type="date" name="deliveryDate" value="${escapeHtml(qr.requested_delivery_date || today)}"></div>
+<div><label>발주일자</label><input type="date" name="orderDate" class="po-orderdate-input" value="${today}"></div>
+<div><label>입고 요청일자</label><input type="date" name="deliveryDate" class="po-deliverydate-input" value="${escapeHtml(qr.requested_delivery_date || today)}"></div>
 <div><label>현장 입고 담당자(저장된 목록)</label>
 <select name="onsiteContactId">
 <option value="">선택 안 함(기본값)</option>
@@ -2584,6 +2619,7 @@ ${contactOpts}
 </div>`;
 }).join('');
 })()}
+`}
 ` : ''}
 <h2>배정된 업체</h2>
 <div class="card">${catBlocks || '<p class="hint">배정된 업체가 없습니다.</p>'}</div>
@@ -2597,6 +2633,13 @@ ${qr.status === 'completed' ? '<div class="flash success" style="margin-bottom:1
 <div><label>기안제목</label><input type="text" name="draft_title" value="${escapeHtml(qr.draft_title || '')}" placeholder="예) 코스 배토사 구매"></div>
 </div>
 <h4 style="margin:16px 0 8px;">품목별 입고/대금지급 정보</h4>
+<div style="display:flex;gap:10px;align-items:end;flex-wrap:wrap;margin-bottom:10px;background:rgba(233,233,237,0.05);padding:10px;border-radius:8px;">
+<div><label>입고일자 일괄 설정</label><input type="date" id="bulk-received-date"></div>
+<div><button type="button" class="btn small secondary" onclick="applyBulkDate('bulk-received-date','.fs-received-input')">↓ 전체 입고일자에 적용</button></div>
+<div><label>대금지급일자 일괄 설정</label><input type="date" id="bulk-payment-date"></div>
+<div><button type="button" class="btn small secondary" onclick="applyBulkDate('bulk-payment-date','.fs-payment-input')">↓ 전체 대금지급일자에 적용</button></div>
+</div>
+<p class="hint" style="margin:0 0 8px;">날짜를 고르고 "전체 적용"을 누르면 아래 모든 행에 같은 날짜가 채워집니다. 특정 품목만 다르게 하고 싶으면 그 칸만 다시 고치면 됩니다.</p>
 <table>
 <thead><tr><th>품목</th><th>선정 업체</th><th>실제 입고일자</th><th>대금지급일자</th><th>지급처</th></tr></thead>
 <tbody>
@@ -2607,8 +2650,8 @@ const customRecipient = s.paymentRecipient && !PAYMENT_SOURCES.includes(s.paymen
 return `<tr>
 <td>${escapeHtml(it.item_name)}<input type="hidden" name="fs_item_id[]" value="${it.id}"></td>
 <td>${escapeHtml(s.vendor_name)}</td>
-<td><input type="date" name="fs_received_date[]" value="${escapeHtml(s.receivedDate || '')}"></td>
-<td><input type="date" name="fs_payment_date[]" value="${escapeHtml(s.paymentDate || '')}"></td>
+<td><input type="date" name="fs_received_date[]" class="fs-received-input" value="${escapeHtml(s.receivedDate || '')}"></td>
+<td><input type="date" name="fs_payment_date[]" class="fs-payment-input" value="${escapeHtml(s.paymentDate || '')}"></td>
 <td><select name="fs_payment_recipient[]">
 <option value="" ${!s.paymentRecipient ? 'selected' : ''}>선택 안 함</option>
 ${recipientOpts}
@@ -2622,6 +2665,14 @@ ${customRecipient ? `<option value="${escapeHtml(s.paymentRecipient)}" selected>
 </form>
 </div>
 ` : ''}
+<script>
+// 날짜 일괄 설정: 개별 입력칸은 그대로 두고, 선택한 날짜를 지정된 클래스의 모든 입력칸에 한 번에 채워준다.
+function applyBulkDate(sourceId, targetSelector) {
+var v = document.getElementById(sourceId).value;
+if (!v) { alert('먼저 날짜를 선택하세요.'); return; }
+document.querySelectorAll(targetSelector).forEach(function (el) { el.value = v; });
+}
+</script>
 `;
 return layout({ title: qr.title, body, user, flash, active: 'dashboard' });
 }
@@ -2640,7 +2691,7 @@ ${requests.length === 0 ? '<div class="card">배정된 견적요청이 없습니
 return layout({ title: '업체 대시보드', body, user, flash });
 }
 
-function vendorQuoteRequestPage({ user, qr, items, permission, mySubmissions, flash }) {
+function vendorQuoteRequestPage({ user, qr, items, permission, mySubmissions, myAttachments, flash }) {
 const canSubmit = permission === 'submit';
 const itemBlocks = items.map((it) => {
 const mine = mySubmissions.filter((s) => s.quote_item_id === it.id);
@@ -2751,6 +2802,21 @@ ${canSubmit ? `
 <input type="file" name="submissions_excel" accept=".xlsx" required>
 <p class="hint">1행은 머릿글로 건너뜁니다.<br><strong>대체품을 제안하려면</strong>: 새 행을 추가해 <b>품목명</b>은 원래 요청 품목명과 똑같이 두고, <b>구분</b> 칸에 "대체품"이라고 적은 뒤 <b>제안품목명</b>에 실제로 제안할 제품명을 입력하세요. 양식 맨 아래에 예시 행이 들어있습니다.</p>
 <button type="submit" class="btn secondary">일괄 제출</button>
+</form>
+</div>
+<div class="card">
+<h3 style="margin-top:0;">견적서 파일 첨부</h3>
+<p class="hint">pdf, 이미지, 엑셀 등 원본 견적서 파일을 그대로 올려두면 관리자가 다운로드해서 확인할 수 있습니다. 여러 개 올릴 수 있습니다.</p>
+${(myAttachments || []).length > 0 ? `
+<ul style="margin:0 0 10px;padding-left:18px;">
+${myAttachments.map((a) => `<li>${escapeHtml(a.file_name)} <span class="hint">(${escapeHtml((a.uploaded_at || '').slice(0, 16).replace('T', ' '))})</span>
+&nbsp;<a href="/quote-requests/${qr.id}/attachments/${a.id}/file" target="_blank">다운로드</a>
+&nbsp;<form method="POST" action="/vendor/quote-requests/${qr.id}/attachments/${a.id}/delete" class="inline" onsubmit="return confirm('이 첨부파일을 삭제할까요?');"><button type="submit" class="btn small danger" style="padding:1px 8px;">삭제</button></form>
+</li>`).join('')}
+</ul>` : ''}
+<form method="POST" action="/vendor/quote-requests/${qr.id}/attachments" enctype="multipart/form-data" style="display:flex;gap:8px;align-items:end;flex-wrap:wrap;">
+<div><label>견적서 파일</label><input type="file" name="attachment_file" required></div>
+<div><button type="submit" class="btn secondary">첨부 업로드</button></div>
 </form>
 </div>` : ''}
 ${itemBlocks}
@@ -3184,13 +3250,24 @@ return out;
 
 // export_json.py(렌더링에 실제로 쓰이는 필드만) + export_yoy.py 포팅.
 // site: '포천' 또는 '창녕'. mainPeriod: 기준 연도(비우면 데이터상 가장 최근 연도).
+// "연도" 칸은 관리자가 엑셀로 구매Data를 대량 등록할 때 직접 입력하는 자유 텍스트라서,
+// 실제 발주일자와 다르게 잘못 기재되거나 비어있는 행이 섞여 있을 수 있다. 그 경우 원본데이터
+// 다운로드에는 (발주일 기준 필터라) 정상적으로 나오는데, 보고서의 "연도" 매칭에서는 걸러져
+// 빠지는 것처럼 보이는 문제가 있었다. 실제 발주일자(order_date)에서 연도를 우선 뽑고,
+// 발주일자가 없을 때만 "연도" 텍스트 칸으로 대체하도록 해서 두 다운로드의 기준을 일치시킨다.
+function pptYearOf(row) {
+const d = String(row[PPT_COL.ORDER_DATE] || '');
+const m = d.match(/^(\d{4})-\d{2}-\d{2}$/);
+if (m) return m[1];
+return String(row[PPT_COL.YEAR] || '').trim();
+}
 function buildPurchaseReportData({ rows, site, mainPeriod }) {
 const siteRowsRaw = rows.filter((r) => pptSiteBare(r[PPT_COL.SITE]) === site);
 const siteRows = pptNormalizeCategories(siteRowsRaw);
-const periods = Array.from(new Set(siteRows.map((r) => String(r[PPT_COL.YEAR] || '').trim()).filter(Boolean))).sort();
+const periods = Array.from(new Set(siteRows.map((r) => pptYearOf(r)).filter(Boolean))).sort();
 if (periods.length === 0) return null;
 const finalMainPeriod = mainPeriod && periods.includes(mainPeriod) ? mainPeriod : periods[periods.length - 1];
-const main = siteRows.filter((r) => String(r[PPT_COL.YEAR] || '').trim() === finalMainPeriod);
+const main = siteRows.filter((r) => pptYearOf(r) === finalMainPeriod);
 if (main.length === 0) return null;
 
 const TOTAL = main.reduce((s, r) => s + pptNum(r[PPT_COL.SUPPLY_PRICE]), 0);
@@ -3330,26 +3407,26 @@ const peakDrivers = pptSortedDesc(peakDriversMap).slice(0, 3).map(([name, amt]) 
 
 // 연도별 신규/이탈 거래업체 (mainPeriod보다 이전 연도들 전체와 비교)
 const mainIdx = periods.indexOf(finalMainPeriod);
-const priorVendors = new Set(siteRows.filter((r) => periods.indexOf(String(r[PPT_COL.YEAR]).trim()) < mainIdx).map((r) => r[PPT_COL.VENDOR]).filter(Boolean));
+const priorVendors = new Set(siteRows.filter((r) => periods.indexOf(pptYearOf(r)) < mainIdx).map((r) => r[PPT_COL.VENDOR]).filter(Boolean));
 const mainVendors = new Set(main.map((r) => r[PPT_COL.VENDOR]).filter(Boolean));
 const newVendorSet = new Set(Array.from(mainVendors).filter((v) => !priorVendors.has(v)));
 const churnedSet = new Set(Array.from(priorVendors).filter((v) => !mainVendors.has(v)));
 const newVendorAmt = pptSumBy(main.filter((r) => newVendorSet.has(r[PPT_COL.VENDOR])), (r) => r[PPT_COL.VENDOR], (r) => pptNum(r[PPT_COL.SUPPLY_PRICE]));
 const newVendors = pptSortedDesc(newVendorAmt).slice(0, 8).map(([name, amt]) => ({ name, 금액: Math.round(amt) }));
-const priorRows = siteRows.filter((r) => churnedSet.has(r[PPT_COL.VENDOR]) && periods.indexOf(String(r[PPT_COL.YEAR]).trim()) < mainIdx);
+const priorRows = siteRows.filter((r) => churnedSet.has(r[PPT_COL.VENDOR]) && periods.indexOf(pptYearOf(r)) < mainIdx);
 const churnAmt = pptSumBy(priorRows, (r) => r[PPT_COL.VENDOR], (r) => pptNum(r[PPT_COL.SUPPLY_PRICE]));
 const churnedVendors = pptSortedDesc(churnAmt).slice(0, 8).map(([name, amt]) => ({ name, 금액: Math.round(amt) }));
 
 // YoY: 사업장 전체 연도별 총액 + 상위 품목구분/업체별 연도별 금액
 const yoy = {};
-periods.forEach((p) => { yoy[p] = Math.round(siteRows.filter((r) => String(r[PPT_COL.YEAR]).trim() === p).reduce((s, r) => s + pptNum(r[PPT_COL.SUPPLY_PRICE]), 0)); });
+periods.forEach((p) => { yoy[p] = Math.round(siteRows.filter((r) => pptYearOf(r) === p).reduce((s, r) => s + pptNum(r[PPT_COL.SUPPLY_PRICE]), 0)); });
 const catYoy = {};
 catTopNames.forEach((c) => {
-catYoy[c] = periods.map((p) => Math.round(siteRows.filter((r) => String(r[PPT_COL.YEAR]).trim() === p && (r[PPT_C3N] || '기타') === c).reduce((s, r) => s + pptNum(r[PPT_COL.SUPPLY_PRICE]), 0)));
+catYoy[c] = periods.map((p) => Math.round(siteRows.filter((r) => pptYearOf(r) === p && (r[PPT_C3N] || '기타') === c).reduce((s, r) => s + pptNum(r[PPT_COL.SUPPLY_PRICE]), 0)));
 });
 const vendYoy = {};
 vendTopNames.forEach((v) => {
-vendYoy[v] = periods.map((p) => Math.round(siteRows.filter((r) => String(r[PPT_COL.YEAR]).trim() === p && (r[PPT_COL.VENDOR] || '') === v).reduce((s, r) => s + pptNum(r[PPT_COL.SUPPLY_PRICE]), 0)));
+vendYoy[v] = periods.map((p) => Math.round(siteRows.filter((r) => pptYearOf(r) === p && (r[PPT_COL.VENDOR] || '') === v).reduce((s, r) => s + pptNum(r[PPT_COL.SUPPLY_PRICE]), 0)));
 });
 
 return {
@@ -4501,8 +4578,13 @@ if (selected) selections[it.id] = selected;
 }
 
 const onsiteContacts = qr.site_id ? await getOnsiteContacts(qr.site_id) : [];
+const attachments = await db.prepare(`
+SELECT qa.*, v.name AS vendor_name FROM quote_attachments qa
+JOIN vendors v ON v.id = qa.vendor_id
+WHERE qa.quote_request_id = ? ORDER BY qa.id DESC
+`).all(id);
 res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
-res.end(views.quoteRequestDetailPage({ user: u, qr, items, assignments, vendorsByCategory, submissionsByItem, selections, buyerLabels: Object.keys(BUYERS), hasSite: !!qr.site_id, onsiteContacts }));
+res.end(views.quoteRequestDetailPage({ user: u, qr, items, assignments, vendorsByCategory, submissionsByItem, selections, buyerLabels: Object.keys(BUYERS), hasSite: !!qr.site_id, onsiteContacts, attachments }));
 });
 
 // ---------- 관리자: 견적요청 완료 처리(기안번호/기안제목 + 품목별 입고일자/대금지급일자/지급처) ----------
@@ -4753,9 +4835,10 @@ SELECT s.* FROM submissions s
 JOIN quote_items qi ON qi.id = s.quote_item_id
 WHERE qi.quote_request_id = ? AND s.vendor_id = ?
 `).all(id, u.userId);
+const myAttachments = await db.prepare('SELECT * FROM quote_attachments WHERE quote_request_id = ? AND vendor_id = ? ORDER BY id DESC').all(id, u.userId);
 const flash = req.query.err === 'selected' ? { type: 'error', message: '이미 관리자가 최종 선정한 제안이라 삭제할 수 없습니다. 수정은 가능합니다.' } : null;
 res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
-res.end(views.vendorQuoteRequestPage({ user: u, qr, items, permission: assign.permission, mySubmissions, flash }));
+res.end(views.vendorQuoteRequestPage({ user: u, qr, items, permission: assign.permission, mySubmissions, myAttachments, flash }));
 });
 
 router.post('/vendor/quote-requests/:id/submissions', async (req, res) => {
@@ -4823,6 +4906,61 @@ if (picked) return redirect(res, `/vendor/quote-requests/${id}?err=selected`);
 
 await db.prepare('DELETE FROM submissions WHERE id = ?').run(subId);
 redirect(res, `/vendor/quote-requests/${id}`);
+});
+
+// ---- 견적서 파일 첨부 (업체가 원본 견적서 파일을 그대로 올려서 관리자가 다운로드해 볼 수 있게) ----
+// pdf/jpg/엑셀 등 어떤 형식이든 그대로 저장만 하고, 내용 파싱은 하지 않는다.
+router.post('/vendor/quote-requests/:id/attachments', async (req, res) => {
+const u = requireLogin('vendor')(req, res);
+if (!u) return;
+const id = Number(req.params.id);
+const assign = await db.prepare('SELECT * FROM vendor_assignments WHERE quote_request_id = ? AND vendor_id = ?').get(id, u.userId);
+if (!assign || assign.permission !== 'submit') { res.writeHead(403); return res.end('견적입력 권한이 없습니다.'); }
+
+await parseBody(req);
+const files = req.files || {};
+const f = files.attachment_file;
+if (f && f.filename && f.data && f.data.length) {
+const stored = `quoteatt_${Date.now()}_${sanitizeFilename(f.filename)}`;
+fs.writeFileSync(path.join(UPLOAD_DIR, stored), f.data);
+await db.prepare('INSERT INTO quote_attachments (quote_request_id, vendor_id, file_name, stored_name, uploaded_at) VALUES (?, ?, ?, ?, ?)')
+.run(id, u.userId, f.filename, stored, new Date().toISOString());
+}
+redirect(res, `/vendor/quote-requests/${id}`);
+});
+
+router.post('/vendor/quote-requests/:id/attachments/:attId/delete', async (req, res) => {
+const u = requireLogin('vendor')(req, res);
+if (!u) return;
+const id = Number(req.params.id);
+const attId = Number(req.params.attId);
+const att = await db.prepare('SELECT * FROM quote_attachments WHERE id = ? AND quote_request_id = ? AND vendor_id = ?').get(attId, id, u.userId);
+if (!att) { res.writeHead(404); return res.end('첨부 파일을 찾을 수 없습니다.'); }
+await db.prepare('DELETE FROM quote_attachments WHERE id = ?').run(attId);
+try { fs.unlinkSync(path.join(UPLOAD_DIR, att.stored_name)); } catch (e) { /* 파일이 이미 없어도 무시 */ }
+redirect(res, `/vendor/quote-requests/${id}`);
+});
+
+// 첨부 파일 다운로드: 업체는 자기가 올린 파일만, 관리자는 이 견적요청에 속한 모든 첨부파일을 볼 수 있다.
+router.get('/quote-requests/:id/attachments/:attId/file', async (req, res) => {
+const u = currentUser(req);
+if (!u) { res.writeHead(401); return res.end('로그인이 필요합니다.'); }
+const id = Number(req.params.id);
+const attId = Number(req.params.attId);
+const att = await db.prepare('SELECT * FROM quote_attachments WHERE id = ? AND quote_request_id = ?').get(attId, id);
+if (!att) { res.writeHead(404); return res.end('첨부 파일을 찾을 수 없습니다.'); }
+if (u.role === 'vendor' && att.vendor_id !== u.userId) { res.writeHead(403); return res.end('접근 권한이 없습니다.'); }
+if (u.role === 'admin') {
+// 관리자는 이 견적요청 자체가 존재하는지만 확인(별도 배정 여부와 무관하게 전체 관리 권한).
+} else if (u.role !== 'vendor') {
+res.writeHead(403); return res.end('접근 권한이 없습니다.');
+}
+const filePath = path.join(UPLOAD_DIR, att.stored_name);
+if (!filePath.startsWith(UPLOAD_DIR) || !fs.existsSync(filePath)) { res.writeHead(404); return res.end('파일을 찾을 수 없습니다.'); }
+const ext = path.extname(att.stored_name).toLowerCase();
+const contentType = CONTENT_TYPES[ext] || 'application/octet-stream';
+res.writeHead(200, { 'Content-Type': contentType, 'Content-Disposition': `inline; filename*=UTF-8''${encodeURIComponent(att.file_name)}` });
+fs.createReadStream(filePath).pipe(res);
 });
 
 router.get('/vendor/quote-requests/:id/submissions-template', async (req, res) => {
