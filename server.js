@@ -247,6 +247,14 @@ button:hover, .btn:hover { background: rgba(145,132,217,0.12); text-decoration: 
   .app-shell.has-sidebar .sidebar .sidebar-account { margin: 0 0 0 auto; padding: 0; border: none; }
   .app-shell.has-sidebar .sidebar .brand-block { padding: 0 10px 0 0; margin: 0; }
 }
+
+/* 클릭 후 "작업 진행 중" 오버레이 — 화면이 멈춘 것처럼 보이지 않게 처리 상태를 명확히 보여준다. */
+.loading-overlay { position: fixed; inset: 0; z-index: 9999; display: none; align-items: center; justify-content: center; background: rgba(12,13,20,0.62); backdrop-filter: blur(1px); }
+.loading-overlay.is-active { display: flex; }
+.loading-box { display: flex; flex-direction: column; align-items: center; gap: 14px; background: #1c1e2c; border: 1px solid rgba(233,233,237,0.14); border-radius: 12px; padding: 28px 36px; box-shadow: 0 8px 30px rgba(0,0,0,0.4); }
+.loading-spinner { width: 34px; height: 34px; border-radius: 50%; border: 3px solid rgba(233,233,237,0.18); border-top-color: #4caf7d; animation: loading-spin 0.8s linear infinite; }
+.loading-text { font-size: 13px; color: #e9e9ed; letter-spacing: .2px; }
+@keyframes loading-spin { to { transform: rotate(360deg); } }
 `;
 
 // ===== lib/router.js =====
@@ -1560,6 +1568,45 @@ ${body}
 <footer class="footer">힐마루 견적관리 시스템</footer>
 </div>
 </div>
+<div id="loading-overlay" class="loading-overlay" aria-hidden="true">
+<div class="loading-box">
+<div class="loading-spinner"></div>
+<div class="loading-text">처리 중입니다. 잠시만 기다려주세요...</div>
+</div>
+</div>
+<script>
+(function () {
+// 버튼/링크를 클릭했을 때 화면이 멈춘 것처럼 보이지 않도록, 서버가 작업을 처리하는 동안
+// "처리 중" 오버레이를 띄운다. 폼 제출은 대부분 즉시 다음 페이지로 넘어가면서 오버레이가
+// 자연히 사라지고, 엑셀 다운로드처럼 페이지 이동이 없는 경우에는 안전장치로 일정 시간 후 자동 숨김 처리한다.
+var overlay = document.getElementById('loading-overlay');
+var hideTimer = null;
+function showLoading() {
+if (!overlay) return;
+overlay.classList.add('is-active');
+overlay.setAttribute('aria-hidden', 'false');
+clearTimeout(hideTimer);
+hideTimer = setTimeout(function () { hideLoading(); }, 20000);
+}
+function hideLoading() {
+if (!overlay) return;
+overlay.classList.remove('is-active');
+overlay.setAttribute('aria-hidden', 'true');
+clearTimeout(hideTimer);
+}
+document.addEventListener('submit', function (e) {
+var form = e.target;
+if (form && form.hasAttribute && form.hasAttribute('data-no-loading')) return;
+showLoading();
+}, true);
+document.addEventListener('click', function (e) {
+var el = e.target.closest ? e.target.closest('a.js-loading-link') : null;
+if (el) showLoading();
+}, true);
+// 뒤로가기(bfcache)로 이 페이지에 돌아왔을 때 오버레이가 그대로 남아있지 않도록 처리.
+window.addEventListener('pageshow', function () { hideLoading(); });
+})();
+</script>
 </body>
 </html>`;
 }
@@ -3970,13 +4017,15 @@ r.manager, r.year, r.site, r.dept, r.category1, r.category2, r.category3, r.draf
 r.order_date, r.received_date, r.item_type, r.item_name, r.spec, String(r.order_qty ?? ''), String(r.unit_price ?? ''), String(r.supply_price ?? ''),
 String(r.received_qty ?? ''), r.pack_unit, r.payment_date, String(r.payment_amount ?? ''), r.payment_recipient, r.note,
 ])));
-const insertRecord = db.prepare(`
+const insertSql = `
 INSERT INTO manual_purchase_records
 (manager, year, site, dept, category1, category2, category3, draft_no, title, vendor_name, order_date, received_date, item_type, item_name, spec, order_qty, unit_price, supply_price, received_qty, pack_unit, payment_date, payment_amount, payment_recipient, note, created_at, import_batch, import_file_name)
 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-`);
+`;
 let created = 0;
 let skipped = 0;
+const createdAt = new Date().toISOString();
+const pendingStatements = [];
 for (let i = 1; i < rows.length; i++) {
 const r = rows[i];
 if (xlsxRowIsEmpty(r)) continue;
@@ -3994,8 +4043,17 @@ paymentRecipient || '', note || '',
 const signature = JSON.stringify(values);
 if (seen.has(signature)) { skipped++; continue; }
 seen.add(signature);
-await insertRecord.run(...values, new Date().toISOString(), importBatch, importFileName);
+pendingStatements.push({ sql: insertSql, args: [...values, createdAt, importBatch, importFileName] });
 created++;
+}
+// 수천 건짜리 대량 업로드(예: 여러 해 데이터를 한 번에 등록)를 한 건씩 순차로 원격 DB에 저장하면
+// 왕복(round-trip)이 너무 많아 응답이 몇 분씩 걸리고, 그 사이 요청이 끊기면(타임아웃/새로고침 등)
+// 뒷부분 행이 저장되지 않은 채로 중단되어 "일부만 등록됨" 현상이 생긴다.
+// db.batch()로 여러 건을 한 번에 묶어 보내 왕복 횟수를 크게 줄인다.
+const IMPORT_BATCH_CHUNK = 300;
+for (let i = 0; i < pendingStatements.length; i += IMPORT_BATCH_CHUNK) {
+const chunk = pendingStatements.slice(i, i + IMPORT_BATCH_CHUNK);
+await db.batch(chunk, 'write');
 }
 console.log(`[엑셀] 구매Data 수동입력: 생성 ${created}건, 중복 스킵 ${skipped}건 (배치 ${importBatch})`);
 const records = await db.prepare('SELECT * FROM manual_purchase_records ORDER BY id DESC').all();
