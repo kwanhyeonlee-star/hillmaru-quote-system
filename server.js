@@ -671,6 +671,20 @@ file_name TEXT NOT NULL,
 stored_name TEXT NOT NULL,
 uploaded_at TEXT NOT NULL
 );
+-- 발주서를 다운로드할 때 마지막으로 입력한 구매담당/발주일자/입고요청일자/현장담당자 정보를
+-- 견적요청+업체 단위로 저장해두고, 다음에 같은 견적요청의 발주서 화면을 열 때 그대로 채워준다.
+CREATE TABLE IF NOT EXISTS po_download_settings (
+quote_request_id INTEGER NOT NULL REFERENCES quote_requests(id) ON DELETE CASCADE,
+vendor_id INTEGER NOT NULL REFERENCES vendors(id) ON DELETE CASCADE,
+buyer TEXT DEFAULT '',
+order_date TEXT DEFAULT '',
+delivery_date TEXT DEFAULT '',
+onsite_contact_id TEXT DEFAULT '',
+onsite_contact_name TEXT DEFAULT '',
+onsite_contact_phone TEXT DEFAULT '',
+updated_at TEXT NOT NULL,
+PRIMARY KEY (quote_request_id, vendor_id)
+);
 CREATE TABLE IF NOT EXISTS final_selections (
 quote_item_id INTEGER PRIMARY KEY REFERENCES quote_items(id) ON DELETE CASCADE,
 submission_id INTEGER NOT NULL REFERENCES submissions(id) ON DELETE CASCADE,
@@ -2461,7 +2475,7 @@ ${isSelected ? '<span class="hint">현재 선정됨</span>' : (isLowest ? `
 </tr>`;
 }
 
-function quoteRequestDetailPage({ user, qr, items, assignments, vendorsByCategory, submissionsByItem, selections, buyerLabels, hasSite, onsiteContacts, attachments, flash }) {
+function quoteRequestDetailPage({ user, qr, items, assignments, vendorsByCategory, submissionsByItem, selections, buyerLabels, hasSite, onsiteContacts, attachments, poSettingsByVendor, flash }) {
 const totalItems = items.length;
 const selectedCount = items.filter((it) => selections[it.id]).length;
 const selectedAmount = items.reduce((sum, it) => {
@@ -2594,28 +2608,34 @@ groups[s.vendor_id].rows.push({ itemName: it.item_name, product_name: s.product_
 return Object.keys(groups).map((vid) => {
 const g = groups[vid];
 const itemRows = g.rows.map((r) => `<li>${escapeHtml(r.product_name)} · ${r.qty}${escapeHtml(r.unit)} · ${money(r.unit_price)}</li>`).join('');
-const buyerOpts = (buyerLabels || []).map((b) => `<option value="${escapeHtml(b)}">${escapeHtml(b)}</option>`).join('');
-const contactOpts = (onsiteContacts || []).map((c) => `<option value="${c.id}">${escapeHtml(c.name)}${c.phone ? ' · ' + escapeHtml(c.phone) : ''}</option>`).join('');
+// 이 업체로 마지막에 발주서를 다운로드했을 때 사용한 설정값이 있으면 그 값을, 없으면 기본값을 채운다.
+const saved = (poSettingsByVendor && poSettingsByVendor[vid]) || null;
 const today = new Date().toISOString().slice(0, 10);
+const buyerOpts = (buyerLabels || []).map((b) => `<option value="${escapeHtml(b)}" ${saved && saved.buyer === b ? 'selected' : ''}>${escapeHtml(b)}</option>`).join('');
+const contactOpts = (onsiteContacts || []).map((c) => `<option value="${c.id}" ${saved && String(saved.onsite_contact_id) === String(c.id) ? 'selected' : ''}>${escapeHtml(c.name)}${c.phone ? ' · ' + escapeHtml(c.phone) : ''}</option>`).join('');
+const savedOrderDate = (saved && saved.order_date) || today;
+const savedDeliveryDate = (saved && saved.delivery_date) || qr.requested_delivery_date || today;
+const savedContactName = (saved && saved.onsite_contact_name) || '';
+const savedContactPhone = (saved && saved.onsite_contact_phone) || '';
 return `
 <div class="card">
 <h3 style="margin-top:0;">${escapeHtml(g.vendorName)}</h3>
 <ul style="margin:4px 0 12px 20px;padding:0;font-size:14px;">${itemRows}</ul>
 <form method="GET" action="/admin/quote-requests/${qr.id}/po/${vid}" style="display:flex;gap:10px;align-items:end;flex-wrap:wrap;">
 <div><label>구매담당</label><select name="buyer">${buyerOpts}</select></div>
-<div><label>발주일자</label><input type="date" name="orderDate" class="po-orderdate-input" value="${today}"></div>
-<div><label>입고 요청일자</label><input type="date" name="deliveryDate" class="po-deliverydate-input" value="${escapeHtml(qr.requested_delivery_date || today)}"></div>
+<div><label>발주일자</label><input type="date" name="orderDate" class="po-orderdate-input" value="${escapeHtml(savedOrderDate)}"></div>
+<div><label>입고 요청일자</label><input type="date" name="deliveryDate" class="po-deliverydate-input" value="${escapeHtml(savedDeliveryDate)}"></div>
 <div><label>현장 입고 담당자(저장된 목록)</label>
 <select name="onsiteContactId">
-<option value="">선택 안 함(기본값)</option>
+<option value="" ${saved && !saved.onsite_contact_id ? 'selected' : ''}>선택 안 함(기본값)</option>
 ${contactOpts}
 </select>
 </div>
-<div><label>담당자 직접입력</label><input type="text" name="onsiteContactName" placeholder="목록에 없으면 직접 입력"></div>
-<div><label>담당자 연락처</label><input type="text" name="onsiteContactPhone" placeholder="010-0000-0000"></div>
+<div><label>담당자 직접입력</label><input type="text" name="onsiteContactName" placeholder="목록에 없으면 직접 입력" value="${escapeHtml(savedContactName)}"></div>
+<div><label>담당자 연락처</label><input type="text" name="onsiteContactPhone" placeholder="010-0000-0000" value="${escapeHtml(savedContactPhone)}"></div>
 <button type="submit" class="btn small">발주서 다운로드</button>
 </form>
-<p class="hint" style="margin-top:6px;">담당자를 직접 입력하면 저장된 목록 선택은 무시되고 직접입력 값이 사용됩니다.</p>
+<p class="hint" style="margin-top:6px;">담당자를 직접 입력하면 저장된 목록 선택은 무시되고 직접입력 값이 사용됩니다. ${saved ? '지난번 다운로드 설정값이 자동으로 채워져 있습니다.' : ''}</p>
 </div>`;
 }).join('');
 })()}
@@ -2638,8 +2658,13 @@ ${qr.status === 'completed' ? '<div class="flash success" style="margin-bottom:1
 <div><button type="button" class="btn small secondary" onclick="applyBulkDate('bulk-received-date','.fs-received-input')">↓ 전체 입고일자에 적용</button></div>
 <div><label>대금지급일자 일괄 설정</label><input type="date" id="bulk-payment-date"></div>
 <div><button type="button" class="btn small secondary" onclick="applyBulkDate('bulk-payment-date','.fs-payment-input')">↓ 전체 대금지급일자에 적용</button></div>
+<div><label>지급처 일괄 설정</label><select id="bulk-payment-recipient">
+<option value="">선택 안 함</option>
+${PAYMENT_SOURCES.map((p) => `<option value="${escapeHtml(p)}">${escapeHtml(p)}</option>`).join('')}
+</select></div>
+<div><button type="button" class="btn small secondary" onclick="applyBulkFill('bulk-payment-recipient','.fs-recipient-input','먼저 지급처를 선택하세요.')">↓ 전체 지급처에 적용</button></div>
 </div>
-<p class="hint" style="margin:0 0 8px;">날짜를 고르고 "전체 적용"을 누르면 아래 모든 행에 같은 날짜가 채워집니다. 특정 품목만 다르게 하고 싶으면 그 칸만 다시 고치면 됩니다.</p>
+<p class="hint" style="margin:0 0 8px;">날짜/지급처를 고르고 "전체 적용"을 누르면 아래 모든 행에 같은 값이 채워집니다. 특정 품목만 다르게 하고 싶으면 그 칸만 다시 고치면 됩니다.</p>
 <table>
 <thead><tr><th>품목</th><th>선정 업체</th><th>실제 입고일자</th><th>대금지급일자</th><th>지급처</th></tr></thead>
 <tbody>
@@ -2652,7 +2677,7 @@ return `<tr>
 <td>${escapeHtml(s.vendor_name)}</td>
 <td><input type="date" name="fs_received_date[]" class="fs-received-input" value="${escapeHtml(s.receivedDate || '')}"></td>
 <td><input type="date" name="fs_payment_date[]" class="fs-payment-input" value="${escapeHtml(s.paymentDate || '')}"></td>
-<td><select name="fs_payment_recipient[]">
+<td><select name="fs_payment_recipient[]" class="fs-recipient-input">
 <option value="" ${!s.paymentRecipient ? 'selected' : ''}>선택 안 함</option>
 ${recipientOpts}
 ${customRecipient ? `<option value="${escapeHtml(s.paymentRecipient)}" selected>${escapeHtml(s.paymentRecipient)}(기존값)</option>` : ''}
@@ -2666,11 +2691,15 @@ ${customRecipient ? `<option value="${escapeHtml(s.paymentRecipient)}" selected>
 </div>
 ` : ''}
 <script>
-// 날짜 일괄 설정: 개별 입력칸은 그대로 두고, 선택한 날짜를 지정된 클래스의 모든 입력칸에 한 번에 채워준다.
-function applyBulkDate(sourceId, targetSelector) {
+// 값 일괄 설정: 개별 입력칸/선택칸은 그대로 두고, 지정된 소스(날짜 입력 또는 select)의 값을
+// 지정된 클래스가 붙은 모든 입력칸/선택칸에 한 번에 채워준다. 날짜뿐 아니라 지급처 select 등에도 재사용한다.
+function applyBulkFill(sourceId, targetSelector, emptyMsg) {
 var v = document.getElementById(sourceId).value;
-if (!v) { alert('먼저 날짜를 선택하세요.'); return; }
+if (!v) { alert(emptyMsg || '먼저 값을 선택하세요.'); return; }
 document.querySelectorAll(targetSelector).forEach(function (el) { el.value = v; });
+}
+function applyBulkDate(sourceId, targetSelector) {
+applyBulkFill(sourceId, targetSelector, '먼저 날짜를 선택하세요.');
 }
 </script>
 `;
@@ -4583,8 +4612,13 @@ SELECT qa.*, v.name AS vendor_name FROM quote_attachments qa
 JOIN vendors v ON v.id = qa.vendor_id
 WHERE qa.quote_request_id = ? ORDER BY qa.id DESC
 `).all(id);
+// 이 견적요청의 업체별 발주서 마지막 다운로드 설정값(구매담당/발주일자/입고요청일자/현장담당자)을 불러와
+// 상세페이지의 업체별 발주서 폼을 기본값 대신 이 값으로 채운다.
+const poSettingsRows = await db.prepare('SELECT * FROM po_download_settings WHERE quote_request_id = ?').all(id);
+const poSettingsByVendor = {};
+for (const row of poSettingsRows) poSettingsByVendor[row.vendor_id] = row;
 res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
-res.end(views.quoteRequestDetailPage({ user: u, qr, items, assignments, vendorsByCategory, submissionsByItem, selections, buyerLabels: Object.keys(BUYERS), hasSite: !!qr.site_id, onsiteContacts, attachments }));
+res.end(views.quoteRequestDetailPage({ user: u, qr, items, assignments, vendorsByCategory, submissionsByItem, selections, buyerLabels: Object.keys(BUYERS), hasSite: !!qr.site_id, onsiteContacts, attachments, poSettingsByVendor }));
 });
 
 // ---------- 관리자: 견적요청 완료 처리(기안번호/기안제목 + 품목별 입고일자/대금지급일자/지급처) ----------
@@ -4649,11 +4683,12 @@ const deliveryDateStr = /^\d{4}-\d{2}-\d{2}$/.test(req.query.deliveryDate || '')
 
 let effectiveOnsiteContact = site.onsite_contact || '';
 const manualContactName = (req.query.onsiteContactName || '').trim();
-if (manualContactName) {
 const manualContactPhone = (req.query.onsiteContactPhone || '').trim();
+const rawOnsiteContactId = (req.query.onsiteContactId || '').trim();
+if (manualContactName) {
 effectiveOnsiteContact = manualContactPhone ? `${manualContactName} ${manualContactPhone}` : manualContactName;
-} else if (req.query.onsiteContactId) {
-const contact = await db.prepare('SELECT * FROM onsite_contacts WHERE id = ? AND site_id = ?').get(Number(req.query.onsiteContactId), site.id);
+} else if (rawOnsiteContactId) {
+const contact = await db.prepare('SELECT * FROM onsite_contacts WHERE id = ? AND site_id = ?').get(Number(rawOnsiteContactId), site.id);
 if (contact) effectiveOnsiteContact = contact.phone ? `${contact.name} ${contact.phone}` : contact.name;
 }
 
@@ -4672,6 +4707,17 @@ console.error(e);
 res.writeHead(500, { 'Content-Type': 'text/plain; charset=utf-8' });
 return res.end('발주서 생성 중 오류가 발생했습니다: ' + e.message);
 }
+
+// 다운로드에 실제로 사용한 설정값을 견적요청+업체 단위로 저장해서, 다음에 이 업체의
+// 발주서 화면을 다시 열 때 지난번 다운로드 값이 그대로 채워지도록 한다.
+await db.prepare(`
+INSERT INTO po_download_settings (quote_request_id, vendor_id, buyer, order_date, delivery_date, onsite_contact_id, onsite_contact_name, onsite_contact_phone, updated_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT(quote_request_id, vendor_id) DO UPDATE SET
+buyer = excluded.buyer, order_date = excluded.order_date, delivery_date = excluded.delivery_date,
+onsite_contact_id = excluded.onsite_contact_id, onsite_contact_name = excluded.onsite_contact_name,
+onsite_contact_phone = excluded.onsite_contact_phone, updated_at = excluded.updated_at
+`).run(qrId, vendorId, buyerLabel, orderDateStr, deliveryDateStr, rawOnsiteContactId, manualContactName, manualContactPhone, new Date().toISOString());
 
 const itemLabel = poItems.length > 1 ? `${poItems[0].name} 외 ${poItems.length - 1}건` : poItems[0].name;
 const safe = (s) => String(s).replace(/[\\/:*?"<>|]/g, '_');
