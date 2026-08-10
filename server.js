@@ -2857,9 +2857,9 @@ paymentRecipient: selectedRow.payment_recipient || '',
 return { submissions, minPrice, candidates, selected };
 }
 
-// ---- 전체 견적요청의 선정 결과(품목·업체·단가 등)를 한 엑셀로 통합 다운로드 ----
-router.get('/admin/quote-requests/export-results', async (req, res) => {
-const u = requireLogin('admin')(req, res);
+// ===== 구매 실적 보고서(PPTX) 자동 생성 =====
+// hillmaru-purchase-performance-report 스킬(원래 Python pandas + Node pptxgenjs 파이프라인)의
+// 데이터 가공(canon_merge/export_json/export_yoy) + 슬라이드 생성(generate2.js) 로직을 이 서버 안으로
 // 그대로 옮겨왔다. 우리 시스템이 만드는 구매Data는 이미 스키마가 깨끗해서(2023년식 원본 워크북의
 // 스키마 보정용 스크립트였던 prep_data.py/finalize_data.py/mapping3.py는 옮길 필요가 없었다.
 // 사업장(포천/창녕)과 연도는 파라미터로 받아 하드코딩을 제거했다.
