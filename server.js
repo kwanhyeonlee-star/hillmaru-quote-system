@@ -1367,6 +1367,9 @@ const BUYERS = {
 '이관현 과장': { name: '이관현', dept: '기획감사팀', email: 'khlee@donghoon.com', phone: '010-2205-1324' },
 '유환익 차장': { name: '유환익', dept: '기획감사팀', email: 'hiyoo@donghoon.com', phone: '010-3500-6370' },
 };
+// 견적요청 등록 시 지정한 담당자(manager_name)가 곧 발주서의 '구매담당'이 되도록 고정하기 위해
+// 담당자명 입력을 이 목록으로 제한한다(자유 텍스트 입력이면 발주서 쪽에서 매칭이 안 될 수 있음).
+const BUYER_LABELS = Object.keys(BUYERS);
 
 // 대금지급 지급처(돈이 실제로 나가는 사업장) 고정 목록
 const PAYMENT_SOURCES = ['본사', '창녕', '포천'];
@@ -2457,7 +2460,13 @@ ${siteOptions}
 <div><label>요청 납기일자</label><input type="date" name="requested_delivery_date"></div>
 </div>
 <div class="form-row">
-<div><label>담당자명</label><input type="text" name="manager_name" placeholder="이 견적요청 담당자"></div>
+<div><label>담당자명</label>
+<select name="manager_name">
+<option value="">선택</option>
+${BUYER_LABELS.map((b) => `<option value="${escapeHtml(b)}">${escapeHtml(b)}</option>`).join('')}
+</select>
+<span class="hint">여기서 지정한 담당자가 발주서의 구매담당으로 고정됩니다(다운로드 시 다시 지정할 필요 없음).</span>
+</div>
 <div><label>담당자 이메일</label><input type="email" name="manager_email" placeholder="업체가 견적을 제출하면 이 메일로 알림이 갑니다"></div>
 </div>
 </div>
@@ -2585,7 +2594,14 @@ ${siteOptions}
 <div><label>요청 납기일자</label><input type="date" name="requested_delivery_date" value="${escapeHtml(qr.requested_delivery_date || '')}"></div>
 </div>
 <div class="form-row">
-<div><label>담당자명</label><input type="text" name="manager_name" value="${escapeHtml(qr.manager_name || '')}"></div>
+<div><label>담당자명</label>
+<select name="manager_name">
+<option value="">선택</option>
+${BUYER_LABELS.map((b) => `<option value="${escapeHtml(b)}" ${qr.manager_name === b ? 'selected' : ''}>${escapeHtml(b)}</option>`).join('')}
+${qr.manager_name && !BUYER_LABELS.includes(qr.manager_name) ? `<option value="${escapeHtml(qr.manager_name)}" selected>${escapeHtml(qr.manager_name)} (기존값)</option>` : ''}
+</select>
+<span class="hint">여기서 지정한 담당자가 발주서의 구매담당으로 고정됩니다(다운로드 시 다시 지정할 필요 없음).</span>
+</div>
 <div><label>담당자 이메일</label><input type="email" name="manager_email" value="${escapeHtml(qr.manager_email || '')}"></div>
 </div>
 </div>
@@ -2796,7 +2812,8 @@ const itemRows = g.rows.map((r) => `<li>${escapeHtml(r.product_name)} · ${r.qty
 // 이 업체로 마지막에 발주서를 다운로드했을 때 사용한 설정값이 있으면 그 값을, 없으면 기본값을 채운다.
 const saved = (poSettingsByVendor && poSettingsByVendor[vid]) || null;
 const today = new Date().toISOString().slice(0, 10);
-const buyerOpts = (buyerLabels || []).map((b) => `<option value="${escapeHtml(b)}" ${saved && saved.buyer === b ? 'selected' : ''}>${escapeHtml(b)}</option>`).join('');
+// 구매담당은 더 이상 발주서 다운로드 화면에서 매번 고르지 않고, 견적요청 등록 시 지정한 담당자로 고정한다.
+const fixedBuyer = BUYERS[qr.manager_name] ? qr.manager_name : BUYER_LABELS[0];
 const contactOpts = (onsiteContacts || []).map((c) => `<option value="${c.id}" ${saved && String(saved.onsite_contact_id) === String(c.id) ? 'selected' : ''}>${escapeHtml(c.name)}${c.phone ? ' · ' + escapeHtml(c.phone) : ''}</option>`).join('');
 const savedOrderDate = (saved && saved.order_date) || today;
 const savedDeliveryDate = (saved && saved.delivery_date) || qr.requested_delivery_date || today;
@@ -2807,7 +2824,7 @@ return `
 <h3 style="margin-top:0;">${escapeHtml(g.vendorName)}</h3>
 <ul style="margin:4px 0 12px 20px;padding:0;font-size:14px;">${itemRows}</ul>
 <form method="GET" action="/admin/quote-requests/${qr.id}/po/${vid}" style="display:flex;gap:10px;align-items:end;flex-wrap:wrap;">
-<div><label>구매담당</label><select name="buyer">${buyerOpts}</select></div>
+<div><label>구매담당</label><div style="padding:9px 0;">${escapeHtml(fixedBuyer)}</div></div>
 <div><label>발주일자</label><input type="date" name="orderDate" class="po-orderdate-input" value="${escapeHtml(savedOrderDate)}"></div>
 <div><label>입고 요청일자</label><input type="date" name="deliveryDate" class="po-deliverydate-input" value="${escapeHtml(savedDeliveryDate)}"></div>
 <div><label>현장 입고 담당자(저장된 목록)</label>
@@ -2820,7 +2837,7 @@ ${contactOpts}
 <div><label>담당자 연락처</label><input type="text" name="onsiteContactPhone" placeholder="010-0000-0000" value="${escapeHtml(savedContactPhone)}"></div>
 <button type="submit" class="btn small">발주서 다운로드</button>
 </form>
-<p class="hint" style="margin-top:6px;">담당자를 직접 입력하면 저장된 목록 선택은 무시되고 직접입력 값이 사용됩니다. ${saved ? '지난번 다운로드 설정값이 자동으로 채워져 있습니다.' : ''}</p>
+<p class="hint" style="margin-top:6px;">구매담당은 견적요청 등록 시 지정한 담당자(${escapeHtml(fixedBuyer)})로 고정되어 여기서 다시 선택하지 않습니다. 변경하려면 <a href="/admin/quote-requests/${qr.id}/edit">견적요청 수정</a>에서 담당자명을 바꿔주세요. 담당자를 직접 입력하면 저장된 목록 선택은 무시되고 직접입력 값이 사용됩니다. ${saved ? '지난번 다운로드 설정값이 자동으로 채워져 있습니다.' : ''}</p>
 </div>`;
 }).join('');
 })()}
@@ -4942,7 +4959,9 @@ poItems.push({ name: selected.product_name, spec: combineSpec(selected.spec, sel
 }
 if (poItems.length === 0) { res.writeHead(404); return res.end('이 업체로 최종 선정된 품목이 없습니다.'); }
 
-const buyerLabel = BUYERS[req.query.buyer] ? req.query.buyer : '이관현 과장';
+// 구매담당은 더 이상 다운로드 화면에서 선택하지 않고, 견적요청 등록 시 지정한 담당자(qr.manager_name)로 고정한다.
+// (URL을 직접 조작해도 다른 담당자로 바뀌지 않도록 req.query.buyer는 참고하지 않는다.)
+const buyerLabel = BUYERS[qr.manager_name] ? qr.manager_name : BUYER_LABELS[0];
 const orderDateStr = /^\d{4}-\d{2}-\d{2}$/.test(req.query.orderDate || '') ? req.query.orderDate : new Date().toISOString().slice(0, 10);
 const deliveryDateStr = /^\d{4}-\d{2}-\d{2}$/.test(req.query.deliveryDate || '') ? req.query.deliveryDate : (qr.requested_delivery_date || orderDateStr);
 
