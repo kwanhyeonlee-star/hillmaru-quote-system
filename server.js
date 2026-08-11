@@ -1174,24 +1174,36 @@ const XLSX_STYLES_XML = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 // numericCols(선택): [0-based 열 인덱스, ...] -> 해당 열은 값이 숫자로 해석되면 천단위 콤마 서식의 숫자 셀로 기록
 // opts.exampleRowIndices(선택): exampleRows 배열 안에서 "실제 등록되면 안 되는 작성 예시" 행의 0-based 인덱스들 -> 예시 색상 적용
 // opts.subHeaderRowIndices(선택): exampleRows 배열 안에서 실제로는 열 제목 역할을 하는 행(예: 구매Data 다운로드의 컬럼명 행) -> 헤더 색상 적용
+// opts.sideNote(선택): { col: 0-based 열 인덱스, row: 1-based 행 번호, text: 문자열 } -> 표 바깥(오른쪽)에 안내문 한 칸을 추가로 적어준다.
 function buildTemplateXlsx(headers, exampleRows, dataValidations, numericCols, opts) {
 exampleRows = exampleRows || [];
 opts = opts || {};
 const numSet = new Set(numericCols || []);
 const exampleIdx = new Set(opts.exampleRowIndices || []);
 const subHeaderIdx = new Set(opts.subHeaderRowIndices || []);
-const rowsXml = [`<row r="1">${headers.map((h, i) => xlsxCellInline(`${xlsxColLetter(i)}1`, h, XLSX_STYLE.HEADER)).join('')}</row>`];
+const rowCells = new Map(); // 1-based 행 번호 -> 그 행의 <c> XML 문자열 배열
+function pushCell(rn, xml) {
+if (!rowCells.has(rn)) rowCells.set(rn, []);
+rowCells.get(rn).push(xml);
+}
+headers.forEach((h, i) => pushCell(1, xlsxCellInline(`${xlsxColLetter(i)}1`, h, XLSX_STYLE.HEADER)));
 exampleRows.forEach((row, rIdx) => {
 const rn = rIdx + 2;
 const isExample = exampleIdx.has(rIdx);
 const isSubHeader = subHeaderIdx.has(rIdx);
-rowsXml.push(`<row r="${rn}">${row.map((v, i) => {
+row.forEach((v, i) => {
 const ref = `${xlsxColLetter(i)}${rn}`;
-if (isSubHeader) return xlsxCellInline(ref, v, XLSX_STYLE.HEADER);
-if (isExample) return xlsxCellAuto(ref, v, numSet.has(i), numSet.has(i) ? XLSX_STYLE.EXAMPLE_NUMERIC : XLSX_STYLE.EXAMPLE);
-return xlsxCellAuto(ref, v, numSet.has(i));
-}).join('')}</row>`);
+if (isSubHeader) return pushCell(rn, xlsxCellInline(ref, v, XLSX_STYLE.HEADER));
+if (isExample) return pushCell(rn, xlsxCellAuto(ref, v, numSet.has(i), numSet.has(i) ? XLSX_STYLE.EXAMPLE_NUMERIC : XLSX_STYLE.EXAMPLE));
+return pushCell(rn, xlsxCellAuto(ref, v, numSet.has(i)));
 });
+});
+if (opts.sideNote && opts.sideNote.text) {
+const { col, row, text } = opts.sideNote;
+pushCell(row, xlsxCellInline(`${xlsxColLetter(col)}${row}`, text));
+}
+const rowsXml = Array.from(rowCells.keys()).sort((a, b) => a - b)
+.map((rn) => `<row r="${rn}">${rowCells.get(rn).join('')}</row>`);
 let dvXml = '';
 if (dataValidations && dataValidations.length) {
 const items = dataValidations.map((dv) => {
@@ -5218,21 +5230,25 @@ const id = Number(req.params.id);
 const assign = await db.prepare('SELECT * FROM vendor_assignments WHERE quote_request_id = ? AND vendor_id = ?').get(id, u.userId);
 if (!assign) { res.writeHead(403); return res.end('접근 권한이 없습니다.'); }
 const items = await db.prepare('SELECT * FROM quote_items WHERE quote_request_id = ?').all(id);
-const rows = items.map((it) => [it.item_name, '요청품', it.item_name, it.spec || '', it.spec2 || '', it.spec3 || '', String(it.qty), it.unit || '', '', '', '', '']);
+// 몇 개 품목인지 한눈에 보이도록, 웹 화면과 동일하게 품목명 앞에 순번을 붙여서 적어준다.
+const rows = items.map((it, idx) => [`${idx + 1}. ${it.item_name}`, '요청품', it.item_name, it.spec || '', it.spec2 || '', it.spec3 || '', String(it.qty), it.unit || '', '', '', '', '']);
 const exampleFirstName = items[0] ? items[0].item_name : '잔디비료';
 const exampleRow = [
-`(예시) 실제로 반영되지 않는 샘플행입니다. 참고 후 삭제하거나 그대로 두세요 (${exampleFirstName})`,
+`(예시) ${exampleFirstName}`,
 '대체품', `${exampleFirstName} 대신 제안할 실제 제품명`, '규격1 예시', '규격2 예시', '규격3 예시', '10', '포', '14000', '2026-09-01', '제조사명', '대체 제안 사유(선택)',
 ];
-const finalRows = rows.length ? [...rows, exampleRow] : [['(예시) 잔디비료', '요청품', '잔디비료', '20kg', '', '', '10', '포', '15000', '2026-09-01', '한국비료', ''], exampleRow];
-// 실제 등록된 품목 행(rows)이 있으면 마지막에 붙인 exampleRow만 예시고, 없으면 두 행 다 예시다.
-const exampleRowIndices = rows.length ? [finalRows.length - 1] : [0, 1];
+// 예시행은 항상 헤더 바로 다음(첫번째 데이터 행)에 오도록 맨 앞에 둔다.
+const finalRows = [exampleRow, ...rows];
+const headers = ['품목명', '구분(요청품/대체품)', '제안품목명', '규격1', '규격2', '규격3', '수량', '단위', '단가', '납기일자', '제조사', '비고/제안사유'];
 sendXlsxTemplate(res, '견적_일괄제출_양식.xlsx',
-['품목명', '구분(요청품/대체품)', '제안품목명', '규격1', '규격2', '규격3', '수량', '단위', '단가', '납기일자', '제조사', '비고/제안사유'],
+headers,
 finalRows,
 [{ col: 1, list: ['요청품', '대체품'], firstRow: 2, lastRow: finalRows.length + 1 }],
 [6, 8],
-{ exampleRowIndices }
+{
+exampleRowIndices: [0],
+sideNote: { col: headers.length + 1, row: 2, text: '(예시) 실제로 반영되지 않는 샘플행입니다. 참고 후 삭제하거나 그대로 두세요.' },
+}
 );
 });
 
@@ -5272,7 +5288,9 @@ const r = rows[i];
 if (xlsxRowIsEmpty(r)) continue;
 const [itemNameRaw, typeRaw, productNameRaw, spec, spec2, spec3, qty, unit, unitPrice, deliveryDateRaw, manufacturer, note] = r;
 if (isExampleRowMarker(itemNameRaw)) continue; // 작성 예시 행은 삭제 안 해도 등록되지 않는다.
-const item = itemByName.get(String(itemNameRaw || '').trim().toLowerCase());
+// 엑셀에 "1. 품목명"처럼 순번이 붙어 있어도 매칭되도록, 맨 앞의 "숫자. " 접두어는 떼고 비교한다.
+const itemNameClean = String(itemNameRaw || '').trim().replace(/^\d+\.\s*/, '');
+const item = itemByName.get(itemNameClean.toLowerCase());
 if (!item) { skipped++; continue; }
 const type = String(typeRaw || '').includes('대체') ? 'substitute' : 'requested';
 const productName = productNameRaw || item.item_name;
