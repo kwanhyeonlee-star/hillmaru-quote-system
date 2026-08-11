@@ -197,6 +197,8 @@ button:hover, .btn:hover { background: rgba(156,129,86,0.12); text-decoration: n
 .item-num::before { content: counter(item-counter) "."; }
 .item-history { margin-top: 10px; }
 .item-history-toggle { cursor: pointer; color: #8C7A5C; font-size: 13px; }
+.item-history-controls { margin-top: 6px; }
+.item-history-controls select { width: auto; display: inline-block; padding: 3px 6px; font-size: 12px; }
 .item-history-results { margin-top: 8px; }
 .category-title { font-weight: 600; margin-bottom: 8px; color: #4A453B; }
 .vendor-row { display: flex; align-items: center; gap: 10px; padding: 5px 0; font-size: 14px; color: #4A453B; }
@@ -2672,7 +2674,17 @@ ${isSelected ? '<span class="hint">현재 선정됨</span>' : (isLowest ? `
 </tr>`;
 }
 
-function quoteRequestDetailPage({ user, qr, items, assignments, vendorsByCategory, submissionsByItem, selections, buyerLabels, hasSite, onsiteContacts, attachments, poSettingsByVendor, flash }) {
+function quoteRequestDetailPage({ user, qr, items, assignments, vendorsByCategory, submissionsByItem, selections, buyerLabels, hasSite, onsiteContacts, attachments, poSettingsByVendor, sites, flash }) {
+// 구매이력 조회 시 사업장을 골라서 볼 수 있게: 이 견적요청 자체의 사업장을 기본 선택값으로 두고,
+// 다른 사업장이나 "전체"로도 바꿔볼 수 있게 한다.
+const currentSite = (sites || []).find((st) => st.id === qr.site_id);
+const currentSiteLabel = currentSite ? (currentSite.title_label || currentSite.name || '') : '';
+const historySiteOptions = (sites || [])
+.map((st) => st.title_label || st.name)
+.filter(Boolean)
+.filter((label, idx, arr) => arr.indexOf(label) === idx) // 사업장 표기 중복 제거
+.map((label) => `<option value="${escapeHtml(label)}" ${label === currentSiteLabel ? 'selected' : ''}>${escapeHtml(label)}</option>`)
+.join('');
 const totalItems = items.length;
 const selectedCount = items.filter((it) => selections[it.id]).length;
 const selectedAmount = items.reduce((sum, it) => {
@@ -2700,6 +2712,14 @@ ${sel ? '<span class="badge selected">선정 완료</span>' : '<span class="hint
 </div>
 <details class="item-history">
 <summary class="item-history-toggle" data-item-name="${escapeHtml(it.item_name)}">▸ 구매이력 조회</summary>
+<div class="item-history-controls">
+<label style="display:inline;margin:0;font-size:12px;">사업장
+<select class="item-history-site">
+<option value="">전체</option>
+${historySiteOptions}
+</select>
+</label>
+</div>
 <div class="item-history-results"><p class="hint">불러오는 중...</p></div>
 </details>
 ${subs.length === 0 ? '<p class="hint">아직 제출된 견적이 없습니다.</p>' : `
@@ -2905,31 +2925,38 @@ applyBulkFill(sourceId, targetSelector, '먼저 날짜를 선택하세요.');
 }
 </script>
 <script>
-// 품목별 "구매이력 조회"를 처음 펼칠 때만 서버에 물어보고(이후에는 캐시해서 다시 안 물어봄),
-// 2023년부터 쌓인 구매Data에서 같은(비슷한) 품목명으로 과거에 언제/얼마에/어느 업체에서
-// 샀는지 목록을 보여준다.
+// 품목별 "구매이력 조회"를 펼칠 때(또는 사업장 선택을 바꿀 때) 서버에 물어봐서,
+// 2023년부터 쌓인 구매Data에서 같은(비슷한) 품목명으로 과거에 언제/얼마에/어느 업체(사업장)에서
+// 샀는지 목록을 보여준다. 사업장을 바꾸면 그 사업장 기준으로 다시 불러온다.
 document.querySelectorAll('.item-history').forEach(function (det) {
-det.addEventListener('toggle', function () {
-if (!det.open || det.dataset.loaded) return;
-det.dataset.loaded = '1';
 var summary = det.querySelector('.item-history-toggle');
 var out = det.querySelector('.item-history-results');
+var siteSelect = det.querySelector('.item-history-site');
 var itemName = summary ? summary.getAttribute('data-item-name') : '';
-fetch('/admin/purchase-data/history?item=' + encodeURIComponent(itemName))
+function loadHistory() {
+out.innerHTML = '<p class="hint">불러오는 중...</p>';
+var site = siteSelect ? siteSelect.value : '';
+fetch('/admin/purchase-data/history?item=' + encodeURIComponent(itemName) + '&site=' + encodeURIComponent(site))
 .then(function (r) { return r.json(); })
 .then(function (data) {
 var rows = data.history || [];
 if (rows.length === 0) { out.innerHTML = '<p class="hint">과거 구매 이력이 없습니다.</p>'; return; }
-var html = '<div class="table-scroll"><table class="table-wide"><thead><tr><th>구매 시기</th><th>수량</th><th>단가</th><th>공급가</th><th>업체</th></tr></thead><tbody>';
+var html = '<div class="table-scroll"><table class="table-wide"><thead><tr><th>구매 시기</th><th>사업장</th><th>수량</th><th>단가</th><th>공급가</th><th>업체</th></tr></thead><tbody>';
 rows.forEach(function (h) {
 var ym = (h.order_date || '').slice(0, 7).replace('-', '년 ') + (h.order_date ? '월' : '-');
-html += '<tr><td>' + ym + '</td><td>' + (h.qty != null ? Number(h.qty).toLocaleString('ko-KR') : '-') + '</td><td>' + (h.unit_price != null ? Number(h.unit_price).toLocaleString('ko-KR') + '원' : '-') + '</td><td>' + (h.supply_price != null ? Number(h.supply_price).toLocaleString('ko-KR') + '원' : '-') + '</td><td>' + (h.vendor_name || '-') + '</td></tr>';
+html += '<tr><td>' + ym + '</td><td>' + (h.site_label || '-') + '</td><td>' + (h.qty != null ? Number(h.qty).toLocaleString('ko-KR') : '-') + '</td><td>' + (h.unit_price != null ? Number(h.unit_price).toLocaleString('ko-KR') + '원' : '-') + '</td><td>' + (h.supply_price != null ? Number(h.supply_price).toLocaleString('ko-KR') + '원' : '-') + '</td><td>' + (h.vendor_name || '-') + '</td></tr>';
 });
 html += '</tbody></table></div>';
 out.innerHTML = html;
 })
 .catch(function () { out.innerHTML = '<p class="hint">이력을 불러오지 못했습니다.</p>'; });
+}
+det.addEventListener('toggle', function () {
+if (!det.open || det.dataset.loaded) return;
+det.dataset.loaded = '1';
+loadHistory();
 });
+if (siteSelect) siteSelect.addEventListener('change', loadHistory);
 });
 </script>
 `;
@@ -3398,34 +3425,42 @@ return [...dataRows, ...manualDataRows];
 // ---- 품목명 기준 과거 구매이력 조회 (2023년부터 쌓인 구매Data에서 검색, 관리자 전용) ----
 // 견적요청을 등록/조회할 때 품목별로 "예전에 얼마에, 어느 업체에서, 언제 샀는지" 참고할 수 있게 한다.
 // getCombinedPurchaseDataRows처럼 전체를 다 불러오지 않고, item_name LIKE 조건으로 필요한 것만 바로 조회한다.
-async function getItemPurchaseHistory(itemName) {
+// siteLabel(선택): sites.title_label 기준 사업장 표기(예: '포천','창녕')로 좁혀서 조회한다. 비우면 전체 사업장.
+async function getItemPurchaseHistory(itemName, siteLabel) {
 const term = (itemName || '').trim();
 if (!term) return [];
 const like = `%${term}%`;
+const site = (siteLabel || '').trim();
 
+const quoteWhere = site ? '(sub.product_name LIKE ? OR qi.item_name LIKE ?) AND st.title_label = ?' : '(sub.product_name LIKE ? OR qi.item_name LIKE ?)';
+const quoteParams = site ? [like, like, site] : [like, like];
 const quoteRows = await db.prepare(`
 SELECT fs.selected_at AS order_date, sub.qty AS qty, sub.unit_price AS unit_price,
-(sub.qty * sub.unit_price) AS supply_price, v.name AS vendor_name
+(sub.qty * sub.unit_price) AS supply_price, v.name AS vendor_name, st.title_label AS site_label
 FROM final_selections fs
 JOIN submissions sub ON sub.id = fs.submission_id
 JOIN vendors v ON v.id = sub.vendor_id
 JOIN quote_items qi ON qi.id = fs.quote_item_id
-WHERE sub.product_name LIKE ? OR qi.item_name LIKE ?
+JOIN quote_requests qr ON qr.id = qi.quote_request_id
+LEFT JOIN sites st ON st.id = qr.site_id
+WHERE ${quoteWhere}
 ORDER BY fs.selected_at DESC
 LIMIT 50
-`).all(like, like);
+`).all(...quoteParams);
 
+const manualWhere = site ? 'item_name LIKE ? AND site = ?' : 'item_name LIKE ?';
+const manualParams = site ? [like, site] : [like];
 const manualRows = await db.prepare(`
-SELECT order_date, order_qty AS qty, unit_price, supply_price, vendor_name
+SELECT order_date, order_qty AS qty, unit_price, supply_price, vendor_name, site AS site_label
 FROM manual_purchase_records
-WHERE item_name LIKE ?
+WHERE ${manualWhere}
 ORDER BY order_date DESC
 LIMIT 50
-`).all(like);
+`).all(...manualParams);
 
 const combined = [
-...quoteRows.map((r) => ({ order_date: (r.order_date || '').slice(0, 10), qty: r.qty, unit_price: r.unit_price, supply_price: r.supply_price, vendor_name: r.vendor_name || '' })),
-...manualRows.map((r) => ({ order_date: r.order_date || '', qty: r.qty, unit_price: r.unit_price, supply_price: r.supply_price, vendor_name: r.vendor_name || '' })),
+...quoteRows.map((r) => ({ order_date: (r.order_date || '').slice(0, 10), qty: r.qty, unit_price: r.unit_price, supply_price: r.supply_price, vendor_name: r.vendor_name || '', site_label: r.site_label || '' })),
+...manualRows.map((r) => ({ order_date: r.order_date || '', qty: r.qty, unit_price: r.unit_price, supply_price: r.supply_price, vendor_name: r.vendor_name || '', site_label: r.site_label || '' })),
 ];
 combined.sort((a, b) => (b.order_date || '').localeCompare(a.order_date || ''));
 return combined.slice(0, 50);
@@ -3434,7 +3469,7 @@ return combined.slice(0, 50);
 router.get('/admin/purchase-data/history', async (req, res) => {
 const u = requireLogin('admin')(req, res);
 if (!u) return;
-const history = await getItemPurchaseHistory(req.query.item || '');
+const history = await getItemPurchaseHistory(req.query.item || '', req.query.site || '');
 res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
 res.end(JSON.stringify({ history }));
 });
@@ -4899,8 +4934,9 @@ WHERE qa.quote_request_id = ? ORDER BY qa.id DESC
 const poSettingsRows = await db.prepare('SELECT * FROM po_download_settings WHERE quote_request_id = ?').all(id);
 const poSettingsByVendor = {};
 for (const row of poSettingsRows) poSettingsByVendor[row.vendor_id] = row;
+const sites = await getSites();
 res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
-res.end(views.quoteRequestDetailPage({ user: u, qr, items, assignments, vendorsByCategory, submissionsByItem, selections, buyerLabels: Object.keys(BUYERS), hasSite: !!qr.site_id, onsiteContacts, attachments, poSettingsByVendor }));
+res.end(views.quoteRequestDetailPage({ user: u, qr, items, assignments, vendorsByCategory, submissionsByItem, selections, buyerLabels: Object.keys(BUYERS), hasSite: !!qr.site_id, onsiteContacts, attachments, poSettingsByVendor, sites }));
 });
 
 // ---------- 관리자: 견적요청 완료 처리(기안번호/기안제목 + 품목별 입고일자/대금지급일자/지급처) ----------
