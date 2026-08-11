@@ -189,6 +189,15 @@ button:hover, .btn:hover { background: rgba(145,132,217,0.12); text-decoration: 
 .btn.ghost:hover { background: rgba(233,233,237,0.06); }
 
 .category-block { border: none; box-shadow: 0 0 0 1px #3f424d; border-radius: 8px; padding: 14px 16px; margin-bottom: 12px; background: #1c1e2c; }
+/* 품목이 몇 개인지 한눈에 보이도록, 견적요청 등록/수정 화면의 품목 행 앞에 순번을 자동으로 붙인다.
+   행이 JS로 추가/복제돼도 CSS 카운터라서 항상 현재 위치 기준으로 번호가 매겨진다. */
+#items-wrap { counter-reset: item-counter; }
+.item-row { counter-increment: item-counter; position: relative; padding-left: 34px; }
+.item-num { position: absolute; left: 0; top: 0; width: 26px; font-weight: 700; color: #8b93a7; font-size: 13px; padding-top: 4px; }
+.item-num::before { content: counter(item-counter) "."; }
+.item-history { margin-top: 10px; }
+.item-history-toggle { cursor: pointer; color: #7c9cff; font-size: 13px; }
+.item-history-results { margin-top: 8px; }
 .category-title { font-weight: 600; margin-bottom: 8px; color: #b2b6ca; }
 .vendor-row { display: flex; align-items: center; gap: 10px; padding: 5px 0; font-size: 14px; color: #cfd3e5; }
 .vendor-row .vname { flex: 1; }
@@ -1114,51 +1123,74 @@ n = Math.floor((n - 1) / 26);
 return s;
 }
 
-function xlsxCellInline(ref, text) {
+function xlsxCellInline(ref, text, styleId) {
 const safe = String(text == null ? '' : text)
 .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-return `<c r="${ref}" t="inlineStr"><is><t xml:space="preserve">${safe}</t></is></c>`;
+const sAttr = styleId ? ` s="${styleId}"` : '';
+return `<c r="${ref}"${sAttr} t="inlineStr"><is><t xml:space="preserve">${safe}</t></is></c>`;
 }
 
+// styles.xml의 cellXfs 인덱스 이름표. 0=기본, 1=숫자(천단위 콤마), 2=헤더(진하게+색상 채움),
+// 3=예시행 텍스트(색상 채움), 4=예시행 숫자(색상 채움+천단위 콤마).
+const XLSX_STYLE = { DEFAULT: 0, NUMERIC: 1, HEADER: 2, EXAMPLE: 3, EXAMPLE_NUMERIC: 4 };
+
 // 수량/단가/공급가처럼 숫자로 다뤄야 하는 칸은 엑셀에서 "회계"처럼 3자리마다 콤마가 자동으로
-// 붙어 보이도록, 텍스트(inlineStr)가 아니라 진짜 숫자 셀(t 속성 없음 + <v>)로 쓰고 스타일
-// 인덱스 1(styles.xml에 정의된 "#,##0" 서식)을 적용한다. 값이 숫자로 해석 안 되면(빈칸,
-// 텍스트 헤더 등) 그냥 기존처럼 텍스트 셀로 쓴다 — 그래서 헤더 행이나 빈 칸은 그대로 안전하다.
-function xlsxCellAuto(ref, value, numeric) {
+// 붙어 보이도록, 텍스트(inlineStr)가 아니라 진짜 숫자 셀(t 속성 없음 + <v>)로 쓰고 숫자서식이
+// 적용된 스타일을 사용한다. 값이 숫자로 해석 안 되면(빈칸, 텍스트 헤더 등) 그냥 기존처럼
+// 텍스트 셀로 쓴다 — 그래서 헤더 행이나 빈 칸은 그대로 안전하다.
+// styleId를 주면 그 스타일로, 안 주면 numeric 여부에 따라 기본 스타일(0 또는 1)을 쓴다.
+function xlsxCellAuto(ref, value, numeric, styleId) {
 if (numeric) {
 const s = value === null || value === undefined ? '' : String(value).replace(/,/g, '').trim();
 if (s !== '' && Number.isFinite(Number(s))) {
-return `<c r="${ref}" s="1"><v>${Number(s)}</v></c>`;
+const sid = styleId != null ? styleId : XLSX_STYLE.NUMERIC;
+return `<c r="${ref}" s="${sid}"><v>${Number(s)}</v></c>`;
 }
 }
-return xlsxCellInline(ref, value);
+return xlsxCellInline(ref, value, styleId);
 }
 
-// 최소한의 styles.xml: 스타일 인덱스 0 = 기본(General), 1 = 천단위 콤마 숫자서식(#,##0).
+// 최소한의 styles.xml: 헤더 행(진한 회색-파란 채움 + 굵은 글씨)과 예시행(옅은 노란 채움)을
+// 나머지 데이터와 색으로 구분할 수 있게 한다.
 const XLSX_STYLES_XML = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
 <numFmts count="1"><numFmt numFmtId="164" formatCode="#,##0"/></numFmts>
-<fonts count="1"><font><sz val="11"/><name val="Calibri"/></font></fonts>
-<fills count="2"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill></fills>
+<fonts count="2"><font><sz val="11"/><name val="Calibri"/></font><font><b/><sz val="11"/><color rgb="FFFFFFFF"/><name val="Calibri"/></font></fonts>
+<fills count="4"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill><fill><patternFill patternType="solid"><fgColor rgb="FF4472C4"/><bgColor rgb="FF4472C4"/></patternFill></fill><fill><patternFill patternType="solid"><fgColor rgb="FFFFF2CC"/><bgColor rgb="FFFFF2CC"/></patternFill></fill></fills>
 <borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders>
 <cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>
-<cellXfs count="2">
+<cellXfs count="5">
 <xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>
 <xf numFmtId="164" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"/>
+<xf numFmtId="0" fontId="1" fillId="2" borderId="0" xfId="0" applyFont="1" applyFill="1"/>
+<xf numFmtId="0" fontId="0" fillId="3" borderId="0" xfId="0" applyFill="1"/>
+<xf numFmtId="164" fontId="0" fillId="3" borderId="0" xfId="0" applyNumberFormat="1" applyFill="1"/>
 </cellXfs>
 <cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles>
 </styleSheet>`;
 
-// headers: 문자열 배열(1행), exampleRows: 문자열 배열의 배열(2행부터, 작성 예시) -> 최소한의 유효한 .xlsx Buffer
+// headers: 문자열 배열(1행, 항상 헤더 색상 적용), exampleRows: 문자열 배열의 배열(2행부터) -> 최소한의 유효한 .xlsx Buffer
 // dataValidations(선택): [{ col: 0-based 열 인덱스, list: ['값1','값2'], firstRow, lastRow }] -> 해당 열에 드롭다운(목록) 유효성검사 추가
 // numericCols(선택): [0-based 열 인덱스, ...] -> 해당 열은 값이 숫자로 해석되면 천단위 콤마 서식의 숫자 셀로 기록
-function buildTemplateXlsx(headers, exampleRows, dataValidations, numericCols) {
+// opts.exampleRowIndices(선택): exampleRows 배열 안에서 "실제 등록되면 안 되는 작성 예시" 행의 0-based 인덱스들 -> 예시 색상 적용
+// opts.subHeaderRowIndices(선택): exampleRows 배열 안에서 실제로는 열 제목 역할을 하는 행(예: 구매Data 다운로드의 컬럼명 행) -> 헤더 색상 적용
+function buildTemplateXlsx(headers, exampleRows, dataValidations, numericCols, opts) {
 exampleRows = exampleRows || [];
+opts = opts || {};
 const numSet = new Set(numericCols || []);
-const rowsXml = [`<row r="1">${headers.map((h, i) => xlsxCellInline(`${xlsxColLetter(i)}1`, h)).join('')}</row>`];
+const exampleIdx = new Set(opts.exampleRowIndices || []);
+const subHeaderIdx = new Set(opts.subHeaderRowIndices || []);
+const rowsXml = [`<row r="1">${headers.map((h, i) => xlsxCellInline(`${xlsxColLetter(i)}1`, h, XLSX_STYLE.HEADER)).join('')}</row>`];
 exampleRows.forEach((row, rIdx) => {
 const rn = rIdx + 2;
-rowsXml.push(`<row r="${rn}">${row.map((v, i) => xlsxCellAuto(`${xlsxColLetter(i)}${rn}`, v, numSet.has(i))).join('')}</row>`);
+const isExample = exampleIdx.has(rIdx);
+const isSubHeader = subHeaderIdx.has(rIdx);
+rowsXml.push(`<row r="${rn}">${row.map((v, i) => {
+const ref = `${xlsxColLetter(i)}${rn}`;
+if (isSubHeader) return xlsxCellInline(ref, v, XLSX_STYLE.HEADER);
+if (isExample) return xlsxCellAuto(ref, v, numSet.has(i), numSet.has(i) ? XLSX_STYLE.EXAMPLE_NUMERIC : XLSX_STYLE.EXAMPLE);
+return xlsxCellAuto(ref, v, numSet.has(i));
+}).join('')}</row>`);
 });
 let dvXml = '';
 if (dataValidations && dataValidations.length) {
@@ -1185,8 +1217,8 @@ entries.set('xl/styles.xml', Buffer.from(XLSX_STYLES_XML, 'utf8'));
 return writeZip(entries);
 }
 
-function sendXlsxTemplate(res, filename, headers, exampleRows, dataValidations, numericCols) {
-const buf = buildTemplateXlsx(headers, exampleRows, dataValidations, numericCols);
+function sendXlsxTemplate(res, filename, headers, exampleRows, dataValidations, numericCols, opts) {
+const buf = buildTemplateXlsx(headers, exampleRows, dataValidations, numericCols, opts);
 res.writeHead(200, {
 'Content-Type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
 'Content-Disposition': `attachment; filename*=UTF-8''${encodeURIComponent(filename)}`,
@@ -1195,7 +1227,8 @@ res.end(buf);
 }
 
 // 시트가 여러 개인 .xlsx Buffer 생성 (연도별 시트로 나눠 담는 구매실적보고서 원본데이터용).
-// sheets: [{ name: '2026', rows: [[...행1...], [...행2...], ...] }] — rows[0]이 실제 1행이 된다.
+// sheets: [{ name: '2026', rows: [[...행1...], [...행2...], ...], headerRowIndices: [2] }] — rows[0]이 실제 1행이 된다.
+// sheet.headerRowIndices(선택): rows 배열 안에서 실제 컬럼명 역할을 하는 행의 0-based 인덱스들 -> 헤더 색상 적용.
 // numericCols(선택): 모든 시트에 공통으로 적용할 숫자서식 열 인덱스 배열(이 앱에서는 시트마다 열 구성이 동일하다).
 function buildMultiSheetXlsx(sheets, numericCols) {
 const numSet = new Set(numericCols || []);
@@ -1210,9 +1243,15 @@ const workbookSheetsXml = [];
 const workbookRelsParts = [];
 sheets.forEach((sheet, idx) => {
 const sheetNum = idx + 1;
+const headerIdx = new Set(sheet.headerRowIndices || []);
 const rowsXml = sheet.rows.map((row, rIdx) => {
 const rn = rIdx + 1;
-return `<row r="${rn}">${row.map((v, i) => xlsxCellAuto(`${xlsxColLetter(i)}${rn}`, v, numSet.has(i))).join('')}</row>`;
+const isHeader = headerIdx.has(rIdx);
+return `<row r="${rn}">${row.map((v, i) => {
+const ref = `${xlsxColLetter(i)}${rn}`;
+if (isHeader) return xlsxCellInline(ref, v, XLSX_STYLE.HEADER);
+return xlsxCellAuto(ref, v, numSet.has(i));
+}).join('')}</row>`;
 }).join('');
 const sheetXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData>${rowsXml}</sheetData></worksheet>`;
 entries.set(`xl/worksheets/sheet${sheetNum}.xml`, Buffer.from(sheetXml, 'utf8'));
@@ -1574,6 +1613,12 @@ return num.toLocaleString('ko-KR');
 function numFromInput(v) {
 if (v === null || v === undefined) return NaN;
 return Number(String(v).replace(/,/g, '').trim());
+}
+
+// 엑셀 양식의 "(예시) ..." 로 시작하는 작성 예시 행은, 사용자가 지우지 않고 그대로 둬도
+// 실제 등록에 반영되지 않도록 업로드 파싱 단계에서 건너뛴다.
+function isExampleRowMarker(v) {
+return String(v || '').trim().startsWith('(예시)');
 }
 
 function fmtDate(s) {
@@ -2358,6 +2403,7 @@ ${siteOptions}
 <h3 style="margin-top:0;">품목 목록</h3>
 <div id="items-wrap">
 <div class="form-row item-row">
+<div class="item-num"></div>
 <div><label>품목명</label><input type="text" name="item_name[]"></div>
 <div><label>규격1</label><input type="text" name="item_spec[]"></div>
 <div><label>규격2</label><input type="text" name="item_spec2[]"></div>
@@ -2428,6 +2474,7 @@ ${rows}
 
 const itemRows = items.map((it) => `
 <div class="form-row item-row">
+<div class="item-num"></div>
 <input type="hidden" name="item_id[]" value="${it.id}">
 <div><label>품목명</label><input type="text" name="item_name[]" required value="${escapeHtml(it.item_name)}"></div>
 <div><label>규격1</label><input type="text" name="item_spec[]" value="${escapeHtml(it.spec || '')}"></div>
@@ -2443,6 +2490,7 @@ ${itemCategorySelects(cat1Options, cat2Options, cat3Options, it.category1 || '',
 
 const blankRow = `
 <div class="form-row item-row">
+<div class="item-num"></div>
 <input type="hidden" name="item_id[]" value="">
 <div><label>품목명</label><input type="text" name="item_name[]"></div>
 <div><label>규격1</label><input type="text" name="item_spec[]"></div>
@@ -2554,7 +2602,7 @@ if (!sel) return sum;
 return sum + sel.unit_price * sel.qty;
 }, 0);
 
-const itemsBlocks = items.map((it) => {
+const itemsBlocks = items.map((it, idx) => {
 const subs = submissionsByItem[it.id] || [];
 const sel = selections[it.id];
 let minPrice = null;
@@ -2568,9 +2616,13 @@ const rows = subs
 return `
 <div class="card">
 <div class="section-actions">
-<h3 style="margin:0;">${escapeHtml(it.item_name)} ${it.item_kind === 'substitute' ? `<span class="badge substitute">대체품${it.alt_of_name ? ` (원본: ${escapeHtml(it.alt_of_name)})` : ''}</span>` : ''} <span class="hint">(${escapeHtml(combineSpec(it.spec, it.spec2, it.spec3))} · ${it.qty}${escapeHtml(it.unit || '')})</span> ${[it.category1, it.category2, it.category3].filter(Boolean).length ? `<span class="hint">[${escapeHtml([it.category1, it.category2, it.category3].filter(Boolean).join(' / '))}]</span>` : ''}</h3>
+<h3 style="margin:0;">${idx + 1}. ${escapeHtml(it.item_name)} ${it.item_kind === 'substitute' ? `<span class="badge substitute">대체품${it.alt_of_name ? ` (원본: ${escapeHtml(it.alt_of_name)})` : ''}</span>` : ''} <span class="hint">(${escapeHtml(combineSpec(it.spec, it.spec2, it.spec3))} · ${it.qty}${escapeHtml(it.unit || '')})</span> ${[it.category1, it.category2, it.category3].filter(Boolean).length ? `<span class="hint">[${escapeHtml([it.category1, it.category2, it.category3].filter(Boolean).join(' / '))}]</span>` : ''}</h3>
 ${sel ? '<span class="badge selected">선정 완료</span>' : '<span class="hint">미선정</span>'}
 </div>
+<details class="item-history">
+<summary class="item-history-toggle" data-item-name="${escapeHtml(it.item_name)}">▸ 구매이력 조회</summary>
+<div class="item-history-results"><p class="hint">불러오는 중...</p></div>
+</details>
 ${subs.length === 0 ? '<p class="hint">아직 제출된 견적이 없습니다.</p>' : `
 <div class="table-scroll">
 <table class="table-wide">
@@ -2772,6 +2824,34 @@ function applyBulkDate(sourceId, targetSelector) {
 applyBulkFill(sourceId, targetSelector, '먼저 날짜를 선택하세요.');
 }
 </script>
+<script>
+// 품목별 "구매이력 조회"를 처음 펼칠 때만 서버에 물어보고(이후에는 캐시해서 다시 안 물어봄),
+// 2023년부터 쌓인 구매Data에서 같은(비슷한) 품목명으로 과거에 언제/얼마에/어느 업체에서
+// 샀는지 목록을 보여준다.
+document.querySelectorAll('.item-history').forEach(function (det) {
+det.addEventListener('toggle', function () {
+if (!det.open || det.dataset.loaded) return;
+det.dataset.loaded = '1';
+var summary = det.querySelector('.item-history-toggle');
+var out = det.querySelector('.item-history-results');
+var itemName = summary ? summary.getAttribute('data-item-name') : '';
+fetch('/admin/purchase-data/history?item=' + encodeURIComponent(itemName))
+.then(function (r) { return r.json(); })
+.then(function (data) {
+var rows = data.history || [];
+if (rows.length === 0) { out.innerHTML = '<p class="hint">과거 구매 이력이 없습니다.</p>'; return; }
+var html = '<div class="table-scroll"><table class="table-wide"><thead><tr><th>구매 시기</th><th>수량</th><th>단가</th><th>공급가</th><th>업체</th></tr></thead><tbody>';
+rows.forEach(function (h) {
+var ym = (h.order_date || '').slice(0, 7).replace('-', '년 ') + (h.order_date ? '월' : '-');
+html += '<tr><td>' + ym + '</td><td>' + (h.qty != null ? Number(h.qty).toLocaleString('ko-KR') : '-') + '</td><td>' + (h.unit_price != null ? Number(h.unit_price).toLocaleString('ko-KR') + '원' : '-') + '</td><td>' + (h.supply_price != null ? Number(h.supply_price).toLocaleString('ko-KR') + '원' : '-') + '</td><td>' + (h.vendor_name || '-') + '</td></tr>';
+});
+html += '</tbody></table></div>';
+out.innerHTML = html;
+})
+.catch(function () { out.innerHTML = '<p class="hint">이력을 불러오지 못했습니다.</p>'; });
+});
+});
+</script>
 `;
 return layout({ title: qr.title, body, user, flash, active: 'dashboard' });
 }
@@ -2792,7 +2872,7 @@ return layout({ title: '업체 대시보드', body, user, flash });
 
 function vendorQuoteRequestPage({ user, qr, items, permission, mySubmissions, myAttachments, flash }) {
 const canSubmit = permission === 'submit';
-const itemBlocks = items.map((it) => {
+const itemBlocks = items.map((it, idx) => {
 const mine = mySubmissions.filter((s) => s.quote_item_id === it.id);
 const requestedMine = mine.filter((s) => s.type === 'requested');
 const subsMine = mine.filter((s) => s.type === 'substitute');
@@ -2833,7 +2913,7 @@ ${canSubmit ? `
 
 return `
 <div class="card">
-<h3 style="margin-top:0;">${escapeHtml(it.item_name)} ${it.item_kind === 'substitute' ? `<span class="badge substitute">대체품${it.alt_of_name ? ` (원본: ${escapeHtml(it.alt_of_name)})` : ''}</span>` : ''} <span class="hint">(${escapeHtml(combineSpec(it.spec, it.spec2, it.spec3))} · 요청수량 ${it.qty}${escapeHtml(it.unit || '')})</span></h3>
+<h3 style="margin-top:0;">${idx + 1}. ${escapeHtml(it.item_name)} ${it.item_kind === 'substitute' ? `<span class="badge substitute">대체품${it.alt_of_name ? ` (원본: ${escapeHtml(it.alt_of_name)})` : ''}</span>` : ''} <span class="hint">(${escapeHtml(combineSpec(it.spec, it.spec2, it.spec3))} · 요청수량 ${it.qty}${escapeHtml(it.unit || '')})</span></h3>
 ${canSubmit ? `
 <form method="POST" action="/vendor/quote-requests/${qr.id}/submissions">
 <input type="hidden" name="quote_item_id" value="${it.id}">
@@ -3235,6 +3315,50 @@ m.received_qty, m.pack_unit, m.payment_date, m.payment_amount, m.payment_recipie
 return [...dataRows, ...manualDataRows];
 }
 
+// ---- 품목명 기준 과거 구매이력 조회 (2023년부터 쌓인 구매Data에서 검색, 관리자 전용) ----
+// 견적요청을 등록/조회할 때 품목별로 "예전에 얼마에, 어느 업체에서, 언제 샀는지" 참고할 수 있게 한다.
+// getCombinedPurchaseDataRows처럼 전체를 다 불러오지 않고, item_name LIKE 조건으로 필요한 것만 바로 조회한다.
+async function getItemPurchaseHistory(itemName) {
+const term = (itemName || '').trim();
+if (!term) return [];
+const like = `%${term}%`;
+
+const quoteRows = await db.prepare(`
+SELECT fs.selected_at AS order_date, sub.qty AS qty, sub.unit_price AS unit_price,
+(sub.qty * sub.unit_price) AS supply_price, v.name AS vendor_name
+FROM final_selections fs
+JOIN submissions sub ON sub.id = fs.submission_id
+JOIN vendors v ON v.id = sub.vendor_id
+JOIN quote_items qi ON qi.id = fs.quote_item_id
+WHERE sub.product_name LIKE ? OR qi.item_name LIKE ?
+ORDER BY fs.selected_at DESC
+LIMIT 50
+`).all(like, like);
+
+const manualRows = await db.prepare(`
+SELECT order_date, order_qty AS qty, unit_price, supply_price, vendor_name
+FROM manual_purchase_records
+WHERE item_name LIKE ?
+ORDER BY order_date DESC
+LIMIT 50
+`).all(like);
+
+const combined = [
+...quoteRows.map((r) => ({ order_date: (r.order_date || '').slice(0, 10), qty: r.qty, unit_price: r.unit_price, supply_price: r.supply_price, vendor_name: r.vendor_name || '' })),
+...manualRows.map((r) => ({ order_date: r.order_date || '', qty: r.qty, unit_price: r.unit_price, supply_price: r.supply_price, vendor_name: r.vendor_name || '' })),
+];
+combined.sort((a, b) => (b.order_date || '').localeCompare(a.order_date || ''));
+return combined.slice(0, 50);
+}
+
+router.get('/admin/purchase-data/history', async (req, res) => {
+const u = requireLogin('admin')(req, res);
+if (!u) return;
+const history = await getItemPurchaseHistory(req.query.item || '');
+res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+res.end(JSON.stringify({ history }));
+});
+
 // ---- 전체 견적요청의 선정 결과(품목·업체·단가 등)를 한 엑셀로 통합 다운로드 ----
 router.get('/admin/quote-requests/export-results', async (req, res) => {
 const u = requireLogin('admin')(req, res);
@@ -3245,7 +3369,7 @@ const fromDate = /^\d{4}-\d{2}-\d{2}$/.test(req.query.from || '') ? req.query.fr
 const toDate = /^\d{4}-\d{2}-\d{2}$/.test(req.query.to || '') ? req.query.to : '';
 const combinedRows = await getCombinedPurchaseDataRows({ fromDate, toDate });
 const rangeLabel = (fromDate || toDate) ? `${fromDate || '처음'}~${toDate || '오늘'}` : `전체_${new Date().toISOString().slice(0, 10)}`;
-sendXlsxTemplate(res, `구매Data_${rangeLabel}.xlsx`, ['구매Data'], [[], PURCHASE_DATA_COLS, ...combinedRows], null, PURCHASE_DATA_NUMERIC_COLS);
+sendXlsxTemplate(res, `구매Data_${rangeLabel}.xlsx`, ['구매Data'], [[], PURCHASE_DATA_COLS, ...combinedRows], null, PURCHASE_DATA_NUMERIC_COLS, { subHeaderRowIndices: [1] });
 });
 
 // ---- 힐마루 구매 실적 보고서(hillmaru-purchase-performance-report 스킬) 원본데이터용 다운로드 ----
@@ -3271,10 +3395,11 @@ const yearRows = byYear.get(year).slice().sort((a, b) => String(a[10] || '').loc
 return {
 name: year,
 rows: [[`구매Data ${year}`], [], PURCHASE_DATA_COLS, ...yearRows],
+headerRowIndices: [0, 2],
 };
 });
 if (sheets.length === 0) {
-sheets.push({ name: '구매Data', rows: [['구매Data'], [], PURCHASE_DATA_COLS] });
+sheets.push({ name: '구매Data', rows: [['구매Data'], [], PURCHASE_DATA_COLS], headerRowIndices: [0, 2] });
 }
 const rangeLabel = (fromDate || toDate) ? `${fromDate || '처음'}~${toDate || '오늘'}` : `전체_${new Date().toISOString().slice(0, 10)}`;
 sendMultiSheetXlsx(res, `구매실적보고서_원본데이터_${rangeLabel}.xlsx`, sheets, PURCHASE_DATA_NUMERIC_COLS);
@@ -4200,8 +4325,8 @@ router.get('/admin/purchase-data/template', (req, res) => {
 const u = requireLogin('admin')(req, res);
 if (!u) return;
 sendXlsxTemplate(res, '구매Data_수동입력_양식.xlsx', PURCHASE_DATA_COLS,
-[['이관현 과장', '2026', '포천', '경기팀', '농자재', '', '', 'D-2026-001', '예시) 잔디용 비료 구매', '예시업체(주)', '2026-08-01', '2026-08-10', '요청품', '유기질 비료', '20kg', 10, 55000, 550000, 10, '포대', '2026-08-15', 550000, '포천', '견적시스템 미사용 건 예시']],
-null, PURCHASE_DATA_NUMERIC_COLS
+[['이관현 과장', '2026', '포천', '경기팀', '농자재', '', '', 'D-2026-001', '(예시) 잔디용 비료 구매', '예시업체(주)', '2026-08-01', '2026-08-10', '요청품', '유기질 비료', '20kg', 10, 55000, 550000, 10, '포대', '2026-08-15', 550000, '포천', '이 행은 작성 예시입니다. 삭제하지 않아도 등록에 반영되지 않습니다.']],
+null, PURCHASE_DATA_NUMERIC_COLS, { exampleRowIndices: [0] }
 );
 });
 
@@ -4250,6 +4375,7 @@ const r = rows[i];
 if (xlsxRowIsEmpty(r)) continue;
 const [manager, year, site, dept, category1, category2, category3, draftNo, title, vendorName, orderDateRaw, receivedDateRaw, itemType, itemName, spec, orderQty, unitPrice, supplyPrice, receivedQty, packUnit, paymentDateRaw, paymentAmount, paymentRecipient, note] = r;
 if (!itemName && !title) continue;
+if (isExampleRowMarker(title) || isExampleRowMarker(itemName)) continue; // 작성 예시 행은 삭제 안 해도 등록되지 않는다.
 const orderDate = excelSerialToDateStr(orderDateRaw);
 const receivedDate = excelSerialToDateStr(receivedDateRaw);
 const paymentDate = excelSerialToDateStr(paymentDateRaw);
@@ -4541,11 +4667,12 @@ if (!u) return;
 sendXlsxTemplate(res, '견적요청_품목_일괄등록_양식.xlsx',
 ['품목명', '구분(요청품/대체품)', '제안품목명(대체품인 경우 실제 등록될 품목명)', '규격1', '규격2', '규격3', '수량', '단위', '과목1', '과목2', '과목3'],
 [
-['예) 비료', '요청품', '', '20kg', '', '', '10', '포', '코스', '저장품', ''],
-['비료', '대체품', '대체 비료(제안 제품명)', '20kg', '', '', '10', '포', '코스', '저장품', ''],
+['(예시) 잔디비료', '요청품', '', '20kg', '', '', '10', '포', '코스', '저장품', ''],
+['(예시) 잔디비료', '대체품', '대체 비료(제안 제품명)', '20kg', '', '', '10', '포', '코스', '저장품', ''],
 ],
 [{ col: 1, list: ['요청품', '대체품'], firstRow: 2, lastRow: 3 }],
-[6]
+[6],
+{ exampleRowIndices: [0, 1] }
 );
 });
 
@@ -4572,6 +4699,7 @@ const r = rows[i];
 if (xlsxRowIsEmpty(r)) continue;
 const nameRaw = (r[0] || '').trim();
 if (!nameRaw) continue;
+if (isExampleRowMarker(nameRaw)) continue; // 작성 예시 행은 삭제 안 해도 등록되지 않는다.
 const kind = String(r[1] || '').includes('대체') ? 'substitute' : 'requested';
 const proposedName = (r[2] || '').trim();
 const finalName = kind === 'substitute' ? (proposedName || nameRaw) : nameRaw;
@@ -4580,7 +4708,7 @@ name: finalName,
 kind,
 altOf: kind === 'substitute' ? nameRaw : '',
 spec: (r[3] || '').trim(), spec2: (r[4] || '').trim(), spec3: (r[5] || '').trim(),
-qty: Number(r[6]) || 1, unit: (r[7] || '').trim(),
+qty: numFromInput(r[6]) || 1, unit: (r[7] || '').trim(),
 category1: (r[8] || '').trim(), category2: (r[9] || '').trim(), category3: (r[10] || '').trim(),
 });
 }
@@ -5091,17 +5219,20 @@ const assign = await db.prepare('SELECT * FROM vendor_assignments WHERE quote_re
 if (!assign) { res.writeHead(403); return res.end('접근 권한이 없습니다.'); }
 const items = await db.prepare('SELECT * FROM quote_items WHERE quote_request_id = ?').all(id);
 const rows = items.map((it) => [it.item_name, '요청품', it.item_name, it.spec || '', it.spec2 || '', it.spec3 || '', String(it.qty), it.unit || '', '', '', '', '']);
-const exampleFirstName = items[0] ? items[0].item_name : '비료';
+const exampleFirstName = items[0] ? items[0].item_name : '잔디비료';
 const exampleRow = [
-`(예시-실제로 반영되지 않는 샘플행. 참고 후 삭제하거나 그대로 두세요) ${exampleFirstName}`,
+`(예시) 실제로 반영되지 않는 샘플행입니다. 참고 후 삭제하거나 그대로 두세요 (${exampleFirstName})`,
 '대체품', `${exampleFirstName} 대신 제안할 실제 제품명`, '규격1 예시', '규격2 예시', '규격3 예시', '10', '포', '14000', '2026-09-01', '제조사명', '대체 제안 사유(선택)',
 ];
-const finalRows = rows.length ? [...rows, exampleRow] : [['예) 비료', '요청품', '비료', '20kg', '', '', '10', '포', '15000', '2026-09-01', '한국비료', ''], exampleRow];
+const finalRows = rows.length ? [...rows, exampleRow] : [['(예시) 잔디비료', '요청품', '잔디비료', '20kg', '', '', '10', '포', '15000', '2026-09-01', '한국비료', ''], exampleRow];
+// 실제 등록된 품목 행(rows)이 있으면 마지막에 붙인 exampleRow만 예시고, 없으면 두 행 다 예시다.
+const exampleRowIndices = rows.length ? [finalRows.length - 1] : [0, 1];
 sendXlsxTemplate(res, '견적_일괄제출_양식.xlsx',
 ['품목명', '구분(요청품/대체품)', '제안품목명', '규격1', '규격2', '규격3', '수량', '단위', '단가', '납기일자', '제조사', '비고/제안사유'],
 finalRows,
 [{ col: 1, list: ['요청품', '대체품'], firstRow: 2, lastRow: finalRows.length + 1 }],
-[6, 8]
+[6, 8],
+{ exampleRowIndices }
 );
 });
 
@@ -5140,6 +5271,7 @@ for (let i = 1; i < rows.length; i++) {
 const r = rows[i];
 if (xlsxRowIsEmpty(r)) continue;
 const [itemNameRaw, typeRaw, productNameRaw, spec, spec2, spec3, qty, unit, unitPrice, deliveryDateRaw, manufacturer, note] = r;
+if (isExampleRowMarker(itemNameRaw)) continue; // 작성 예시 행은 삭제 안 해도 등록되지 않는다.
 const item = itemByName.get(String(itemNameRaw || '').trim().toLowerCase());
 if (!item) { skipped++; continue; }
 const type = String(typeRaw || '').includes('대체') ? 'substitute' : 'requested';
