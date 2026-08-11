@@ -2371,6 +2371,56 @@ return `
 </div>`;
 }
 
+// 견적요청 신규/수정 화면의 "업체 배정" 섹션에서 공통으로 쓰는 카테고리 필터 UI.
+// 업체가 많아지면 처음부터 전체 카테고리를 다 펼쳐두면 찾기 번거로우므로, 카테고리를 고르기 전에는
+// 아무 업체도 보이지 않게 숨겨두고(카테고리 선택 또는 '전체보기' 선택 시에만 표시), 지금 보이는
+// 업체들에 한해 조회/견적입력 권한을 한번에 켜고 끌 수 있는 일괄 선택 버튼을 함께 제공한다.
+function vendorCategoryFilterUI(groups, catBlocksHtml, emptyMsg) {
+const catOptions = groups.map((g) => `<option value="${escapeHtml(g)}">${escapeHtml(g)}</option>`).join('');
+return `
+<div class="form-row" style="max-width:260px;">
+<div><label>업체 카테고리 선택</label>
+<select id="vendor-cat-filter" onchange="filterVendorBlocks()">
+<option value="">카테고리를 선택하세요</option>
+<option value="__all__">전체보기</option>
+${catOptions}
+</select>
+</div>
+</div>
+<div class="bulk-btns" id="vendor-bulk-btns" style="display:none;margin:10px 0;">
+<button type="button" class="btn small secondary" onclick="bulkSetVendorCheckboxes('assign_view', true)">조회 전체선택</button>
+<button type="button" class="btn small ghost" onclick="bulkSetVendorCheckboxes('assign_view', false)">조회 전체해제</button>
+<button type="button" class="btn small secondary" onclick="bulkSetVendorCheckboxes('assign_submit', true)">견적입력 전체선택</button>
+<button type="button" class="btn small ghost" onclick="bulkSetVendorCheckboxes('assign_submit', false)">견적입력 전체해제</button>
+</div>
+<div id="vendor-cat-blocks">
+${catBlocksHtml || emptyMsg}
+</div>`;
+}
+
+const VENDOR_FILTER_SCRIPT = `
+function filterVendorBlocks() {
+  var sel = document.getElementById('vendor-cat-filter').value;
+  var blocks = document.querySelectorAll('#vendor-cat-blocks .category-block');
+  var bulkBar = document.getElementById('vendor-bulk-btns');
+  if (!sel) {
+    blocks.forEach(function (b) { b.style.display = 'none'; });
+    if (bulkBar) bulkBar.style.display = 'none';
+    return;
+  }
+  if (bulkBar) bulkBar.style.display = 'flex';
+  blocks.forEach(function (b) {
+    var show = sel === '__all__' || b.getAttribute('data-vendor-cat') === sel;
+    b.style.display = show ? '' : 'none';
+  });
+}
+function bulkSetVendorCheckboxes(name, checked) {
+  document.querySelectorAll('#vendor-cat-blocks .category-block').forEach(function (b) {
+    if (b.style.display === 'none') return;
+    b.querySelectorAll('input[name="' + name + '"]').forEach(function (cb) { cb.checked = checked; });
+  });
+}`;
+
 function quoteRequestNewPage({ user, vendorsByCategory, cat1Options, cat2Options, cat3Options, sites, flash }) {
 const groups = [...cat1Options, ...Object.keys(vendorsByCategory).filter((k) => !cat1Options.includes(k))];
 const catBlocks = groups.map((cat) => {
@@ -2383,7 +2433,7 @@ const rows = vs.map((v) => `
 <label style="display:inline;margin:0;"><input type="checkbox" name="assign_submit" value="${v.id}" class="submit-cb-${cat}"> 견적입력</label>
 </div>`).join('');
 return `
-<div class="category-block">
+<div class="category-block" data-vendor-cat="${escapeHtml(cat)}" style="display:none;">
 <div class="category-title">${escapeHtml(cat)} (${vs.length}개 업체)</div>
 ${rows}
 </div>`;
@@ -2439,9 +2489,9 @@ ${itemCategorySelects(cat1Options, cat2Options, cat3Options)}
 </div>
 </div>
 <div class="card">
-<h3 style="margin-top:0;">카테고리별(카테고리1 기준) 업체 배정</h3>
-<p class="hint">체크한 업체에게 이 견적요청이 노출됩니다. '견적입력'은 견적 제출 가능, '조회'만 체크하면 열람만 가능합니다. 생성 시 배정된 업체에게 안내 메일이 발송됩니다.</p>
-${catBlocks || '<p class="hint">등록된 업체가 없습니다. 먼저 업체를 등록하세요.</p>'}
+<h3 style="margin-top:0;">업체 배정</h3>
+<p class="hint">카테고리를 선택하면 해당 업체 목록이 표시됩니다(전체보기도 가능). 체크한 업체에게 이 견적요청이 노출됩니다. '견적입력'은 견적 제출 가능, '조회'만 체크하면 열람만 가능합니다. 생성 시 배정된 업체에게 안내 메일이 발송됩니다.</p>
+${vendorCategoryFilterUI(groups, catBlocks, '<p class="hint">등록된 업체가 없습니다. 먼저 업체를 등록하세요.</p>')}
 </div>
 <button type="submit">견적요청 생성</button>
 </form>
@@ -2453,7 +2503,7 @@ row.querySelectorAll('input').forEach(i => { if (i.name === 'item_qty[]') i.valu
 row.querySelectorAll('select').forEach(s => { s.selectedIndex = 0; });
 wrap.appendChild(row);
 }
-
+${VENDOR_FILTER_SCRIPT}
 </script>
 `;
 return layout({ title: '새 견적요청', body, user, flash, active: 'dashboard' });
@@ -2478,7 +2528,7 @@ return `
 </div>`;
 }).join('');
 return `
-<div class="category-block">
+<div class="category-block" data-vendor-cat="${escapeHtml(cat)}" style="display:none;">
 <div class="category-title">${escapeHtml(cat)} (${vs.length}개 업체)</div>
 ${rows}
 </div>`;
@@ -2553,9 +2603,9 @@ ${itemRows}
 </div>
 </div>
 <div class="card">
-<h3 style="margin-top:0;">카테고리별(카테고리1 기준) 업체 배정</h3>
-<p class="hint">체크한 업체에게 이 견적요청이 노출됩니다. '견적입력'은 견적 제출 가능, '조회'만 체크하면 열람만 가능합니다. 체크를 해제하면 해당 업체는 더 이상 이 견적요청에 접근할 수 없습니다(단, 이미 제출한 견적 내역은 유지됩니다).</p>
-${catBlocks || '<p class="hint">등록된 업체가 없습니다.</p>'}
+<h3 style="margin-top:0;">업체 배정</h3>
+<p class="hint">카테고리를 선택하면 해당 업체 목록이 표시됩니다. 이미 배정된 업체를 확인하려면 '전체보기'를 선택하세요. 체크한 업체에게 이 견적요청이 노출됩니다. '견적입력'은 견적 제출 가능, '조회'만 체크하면 열람만 가능합니다. 체크를 해제하면 해당 업체는 더 이상 이 견적요청에 접근할 수 없습니다(단, 이미 제출한 견적 내역은 유지됩니다).</p>
+${vendorCategoryFilterUI(groups, catBlocks, '<p class="hint">등록된 업체가 없습니다.</p>')}
 </div>
 <button type="submit">수정 저장</button>
 <a class="btn ghost" href="/admin/quote-requests/${qr.id}" style="margin-left:8px;">취소</a>
@@ -2567,6 +2617,7 @@ const template = document.createElement('div');
 template.innerHTML = ${JSON.stringify(blankRow)};
 wrap.appendChild(template.firstElementChild);
 }
+${VENDOR_FILTER_SCRIPT}
 </script>
 `;
 return layout({ title: `견적요청 수정 — ${qr.title}`, body, user, flash, active: 'dashboard' });
