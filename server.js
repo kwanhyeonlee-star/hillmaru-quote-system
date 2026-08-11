@@ -1120,14 +1120,45 @@ const safe = String(text == null ? '' : text)
 return `<c r="${ref}" t="inlineStr"><is><t xml:space="preserve">${safe}</t></is></c>`;
 }
 
+// 수량/단가/공급가처럼 숫자로 다뤄야 하는 칸은 엑셀에서 "회계"처럼 3자리마다 콤마가 자동으로
+// 붙어 보이도록, 텍스트(inlineStr)가 아니라 진짜 숫자 셀(t 속성 없음 + <v>)로 쓰고 스타일
+// 인덱스 1(styles.xml에 정의된 "#,##0" 서식)을 적용한다. 값이 숫자로 해석 안 되면(빈칸,
+// 텍스트 헤더 등) 그냥 기존처럼 텍스트 셀로 쓴다 — 그래서 헤더 행이나 빈 칸은 그대로 안전하다.
+function xlsxCellAuto(ref, value, numeric) {
+if (numeric) {
+const s = value === null || value === undefined ? '' : String(value).replace(/,/g, '').trim();
+if (s !== '' && Number.isFinite(Number(s))) {
+return `<c r="${ref}" s="1"><v>${Number(s)}</v></c>`;
+}
+}
+return xlsxCellInline(ref, value);
+}
+
+// 최소한의 styles.xml: 스타일 인덱스 0 = 기본(General), 1 = 천단위 콤마 숫자서식(#,##0).
+const XLSX_STYLES_XML = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+<numFmts count="1"><numFmt numFmtId="164" formatCode="#,##0"/></numFmts>
+<fonts count="1"><font><sz val="11"/><name val="Calibri"/></font></fonts>
+<fills count="2"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill></fills>
+<borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders>
+<cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>
+<cellXfs count="2">
+<xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>
+<xf numFmtId="164" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"/>
+</cellXfs>
+<cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles>
+</styleSheet>`;
+
 // headers: 문자열 배열(1행), exampleRows: 문자열 배열의 배열(2행부터, 작성 예시) -> 최소한의 유효한 .xlsx Buffer
 // dataValidations(선택): [{ col: 0-based 열 인덱스, list: ['값1','값2'], firstRow, lastRow }] -> 해당 열에 드롭다운(목록) 유효성검사 추가
-function buildTemplateXlsx(headers, exampleRows, dataValidations) {
+// numericCols(선택): [0-based 열 인덱스, ...] -> 해당 열은 값이 숫자로 해석되면 천단위 콤마 서식의 숫자 셀로 기록
+function buildTemplateXlsx(headers, exampleRows, dataValidations, numericCols) {
 exampleRows = exampleRows || [];
+const numSet = new Set(numericCols || []);
 const rowsXml = [`<row r="1">${headers.map((h, i) => xlsxCellInline(`${xlsxColLetter(i)}1`, h)).join('')}</row>`];
 exampleRows.forEach((row, rIdx) => {
 const rn = rIdx + 2;
-rowsXml.push(`<row r="${rn}">${row.map((v, i) => xlsxCellInline(`${xlsxColLetter(i)}${rn}`, v)).join('')}</row>`);
+rowsXml.push(`<row r="${rn}">${row.map((v, i) => xlsxCellAuto(`${xlsxColLetter(i)}${rn}`, v, numSet.has(i))).join('')}</row>`);
 });
 let dvXml = '';
 if (dataValidations && dataValidations.length) {
@@ -1140,21 +1171,22 @@ return `<dataValidation type="list" allowBlank="1" showInputMessage="1" showErro
 dvXml = `<dataValidations count="${dataValidations.length}">${items}</dataValidations>`;
 }
 const sheetXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData>${rowsXml.join('')}</sheetData>${dvXml}</worksheet>`;
-const contentTypes = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/></Types>`;
+const contentTypes = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/><Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/></Types>`;
 const rootRels = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>`;
 const workbookXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="Sheet1" sheetId="1" r:id="rId1"/></sheets></workbook>`;
-const workbookRels = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/></Relationships>`;
+const workbookRels = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>`;
 const entries = new Map();
 entries.set('[Content_Types].xml', Buffer.from(contentTypes, 'utf8'));
 entries.set('_rels/.rels', Buffer.from(rootRels, 'utf8'));
 entries.set('xl/workbook.xml', Buffer.from(workbookXml, 'utf8'));
 entries.set('xl/_rels/workbook.xml.rels', Buffer.from(workbookRels, 'utf8'));
 entries.set('xl/worksheets/sheet1.xml', Buffer.from(sheetXml, 'utf8'));
+entries.set('xl/styles.xml', Buffer.from(XLSX_STYLES_XML, 'utf8'));
 return writeZip(entries);
 }
 
-function sendXlsxTemplate(res, filename, headers, exampleRows, dataValidations) {
-const buf = buildTemplateXlsx(headers, exampleRows, dataValidations);
+function sendXlsxTemplate(res, filename, headers, exampleRows, dataValidations, numericCols) {
+const buf = buildTemplateXlsx(headers, exampleRows, dataValidations, numericCols);
 res.writeHead(200, {
 'Content-Type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
 'Content-Disposition': `attachment; filename*=UTF-8''${encodeURIComponent(filename)}`,
@@ -1164,12 +1196,15 @@ res.end(buf);
 
 // 시트가 여러 개인 .xlsx Buffer 생성 (연도별 시트로 나눠 담는 구매실적보고서 원본데이터용).
 // sheets: [{ name: '2026', rows: [[...행1...], [...행2...], ...] }] — rows[0]이 실제 1행이 된다.
-function buildMultiSheetXlsx(sheets) {
+// numericCols(선택): 모든 시트에 공통으로 적용할 숫자서식 열 인덱스 배열(이 앱에서는 시트마다 열 구성이 동일하다).
+function buildMultiSheetXlsx(sheets, numericCols) {
+const numSet = new Set(numericCols || []);
 const entries = new Map();
 const contentTypesParts = [
 '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>',
 '<Default Extension="xml" ContentType="application/xml"/>',
 '<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>',
+'<Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>',
 ];
 const workbookSheetsXml = [];
 const workbookRelsParts = [];
@@ -1177,7 +1212,7 @@ sheets.forEach((sheet, idx) => {
 const sheetNum = idx + 1;
 const rowsXml = sheet.rows.map((row, rIdx) => {
 const rn = rIdx + 1;
-return `<row r="${rn}">${row.map((v, i) => xlsxCellInline(`${xlsxColLetter(i)}${rn}`, v)).join('')}</row>`;
+return `<row r="${rn}">${row.map((v, i) => xlsxCellAuto(`${xlsxColLetter(i)}${rn}`, v, numSet.has(i))).join('')}</row>`;
 }).join('');
 const sheetXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData>${rowsXml}</sheetData></worksheet>`;
 entries.set(`xl/worksheets/sheet${sheetNum}.xml`, Buffer.from(sheetXml, 'utf8'));
@@ -1187,6 +1222,8 @@ const safeName = xmlEscape(String(sheet.name || `Sheet${sheetNum}`).replace(/[\\
 workbookSheetsXml.push(`<sheet name="${safeName}" sheetId="${sheetNum}" r:id="rId${sheetNum}"/>`);
 workbookRelsParts.push(`<Relationship Id="rId${sheetNum}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet${sheetNum}.xml"/>`);
 });
+const stylesRelId = `rId${sheets.length + 1}`;
+workbookRelsParts.push(`<Relationship Id="${stylesRelId}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>`);
 const contentTypes = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">${contentTypesParts.join('')}</Types>`;
 const rootRels = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>`;
 const workbookXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets>${workbookSheetsXml.join('')}</sheets></workbook>`;
@@ -1195,11 +1232,12 @@ entries.set('[Content_Types].xml', Buffer.from(contentTypes, 'utf8'));
 entries.set('_rels/.rels', Buffer.from(rootRels, 'utf8'));
 entries.set('xl/workbook.xml', Buffer.from(workbookXml, 'utf8'));
 entries.set('xl/_rels/workbook.xml.rels', Buffer.from(workbookRels, 'utf8'));
+entries.set('xl/styles.xml', Buffer.from(XLSX_STYLES_XML, 'utf8'));
 return writeZip(entries);
 }
 
-function sendMultiSheetXlsx(res, filename, sheets) {
-const buf = buildMultiSheetXlsx(sheets);
+function sendMultiSheetXlsx(res, filename, sheets, numericCols) {
+const buf = buildMultiSheetXlsx(sheets, numericCols);
 res.writeHead(200, {
 'Content-Type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
 'Content-Disposition': `attachment; filename*=UTF-8''${encodeURIComponent(filename)}`,
@@ -1285,6 +1323,8 @@ const PAYMENT_SOURCES = ['본사', '창녕', '포천'];
 // 구매 실적 보고서 스킬(hillmaru-purchase-performance-report)이 읽는 원본 구매데이터 양식과
 // 동일하게 맞춘 24개 컬럼. 견적요청 결과 다운로드와 수동 구매Data 입력 화면에서 함께 사용한다.
 const PURCHASE_DATA_COLS = ['담당자', '연도', '사업장', '요청부서', '과목1', '과목2', '과목3', '품의번호', '제목', '업체명', '발주일', '입고일', '제품구분', '제품명', '규격', '발주수량', '단가', '공급가', '입고수량', '포장단위', '대금지급일', '대금지급', '지급처', '비고'];
+// PURCHASE_DATA_COLS 순서 기준 숫자 서식(천단위 콤마)을 적용할 열: 발주수량/단가/공급가/입고수량/대금지급.
+const PURCHASE_DATA_NUMERIC_COLS = [15, 16, 17, 18, 21];
 
 const ITEM_ROW_START = 16;
 const ITEM_ROW_MAX = 36; // 템플릿에 준비된 품목 행 범위 (21행)
@@ -1520,6 +1560,22 @@ if (n === null || n === undefined) return '-';
 return Number(n).toLocaleString('ko-KR') + '원';
 }
 
+// money()와 달리 '원' 단위를 붙이지 않는, 입력칸(value=)에 넣기 위한 순수 천단위 콤마 표기.
+function fmtNum(n) {
+if (n === null || n === undefined || n === '') return '';
+const num = Number(n);
+if (!Number.isFinite(num)) return String(n);
+return num.toLocaleString('ko-KR');
+}
+
+// 입력값에 사용자가 직접 찍었거나 자동 포맷으로 붙은 천단위 콤마/공백을 제거하고 숫자로 바꾼다.
+// 폼 제출 시 클라이언트 JS가 콤마를 지워서 보내는 게 기본이지만, JS가 꺼져 있거나 API로 직접
+// 호출되는 경우에도 서버에서 한 번 더 방어적으로 처리한다.
+function numFromInput(v) {
+if (v === null || v === undefined) return NaN;
+return Number(String(v).replace(/,/g, '').trim());
+}
+
 function fmtDate(s) {
 if (!s) return '-';
 return s;
@@ -1647,6 +1703,32 @@ if (el) showLoading();
 window.addEventListener('pageshow', function () { hideLoading(); });
 })();
 </script>
+<script>
+(function () {
+// 수량/단가처럼 숫자를 직접 입력하는 칸(class="numfmt")은 타이핑하는 동안 3자리마다 콤마를
+// 자동으로 붙여서 보기 편하게 하고, 실제 폼 제출 직전에는 콤마를 다시 지워서 서버로는
+// 순수 숫자만 전달한다(콤마가 섞인 채로 저장되지 않도록).
+function digitsOnly(v) { return String(v || '').replace(/[^0-9]/g, ''); }
+function formatWithCommas(v) {
+var d = digitsOnly(v);
+if (!d) return '';
+return String(Number(d)).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+}
+document.addEventListener('input', function (e) {
+var el = e.target;
+if (!el.classList || !el.classList.contains('numfmt')) return;
+var caretFromEnd = el.value.length - (el.selectionEnd || el.value.length);
+el.value = formatWithCommas(el.value);
+var pos = el.value.length - caretFromEnd;
+if (el.setSelectionRange) { try { el.setSelectionRange(pos, pos); } catch (err) {} }
+}, true);
+document.addEventListener('submit', function (e) {
+var form = e.target;
+if (!form.querySelectorAll) return;
+form.querySelectorAll('.numfmt').forEach(function (el) { el.value = digitsOnly(el.value); });
+}, true);
+})();
+</script>
 </body>
 </html>`;
 }
@@ -1713,6 +1795,28 @@ ${error ? `<div class="flash error">${escapeHtml(error)}</div>` : ''}
 </div>
 </div>
 </div>
+<div id="loading-overlay" class="loading-overlay" aria-hidden="true">
+<div class="loading-box">
+<div class="loading-spinner"></div>
+<div class="loading-text">로그인 중입니다. 잠시만 기다려주세요...</div>
+</div>
+</div>
+<script>
+(function () {
+// 로그인 버튼을 눌렀을 때도 화면이 멈춘 것처럼 보이지 않도록 처리 오버레이를 띄운다.
+// 로그인 폼은 아이디/비밀번호 입력칸에서 엔터를 눌러도(기본 폼 제출 동작) 정상적으로 제출된다.
+var overlay = document.getElementById('loading-overlay');
+function showLoading() {
+if (!overlay) return;
+overlay.classList.add('is-active');
+overlay.setAttribute('aria-hidden', 'false');
+}
+document.addEventListener('submit', function () { showLoading(); }, true);
+window.addEventListener('pageshow', function () {
+if (overlay) { overlay.classList.remove('is-active'); overlay.setAttribute('aria-hidden', 'true'); }
+});
+})();
+</script>
 </body>
 </html>`;
 }
@@ -2072,38 +2176,10 @@ return layout({ title: '사업장 관리', body, user, flash, active: 'sites' })
 // 견적관리 시스템을 거치지 않고 진행된 구매건을 관리자가 엑셀로 직접 등록해두는 화면.
 // 구매Data 다운로드 시 견적 기반 데이터와 합산되어 나간다.
 function adminPurchaseDataPage({ user, records, flash }) {
-const rows = records.map((m) => `
-<tr>
-<td class="wrap">${escapeHtml(m.manager)}</td>
-<td>${escapeHtml(m.year)}</td>
-<td class="wrap">${escapeHtml(m.site)}</td>
-<td class="wrap">${escapeHtml(m.dept)}</td>
-<td class="wrap">${escapeHtml(m.category1)}</td>
-<td class="wrap">${escapeHtml(m.category2)}</td>
-<td class="wrap">${escapeHtml(m.category3)}</td>
-<td class="wrap">${escapeHtml(m.draft_no)}</td>
-<td class="wrap">${escapeHtml(m.title)}</td>
-<td class="wrap">${escapeHtml(m.vendor_name)}</td>
-<td>${escapeHtml(m.order_date)}</td>
-<td>${escapeHtml(m.received_date)}</td>
-<td class="wrap">${escapeHtml(m.item_type)}</td>
-<td class="wrap">${escapeHtml(m.item_name)}</td>
-<td class="wrap">${escapeHtml(m.spec)}</td>
-<td>${escapeHtml(String(m.order_qty ?? ''))}</td>
-<td>${escapeHtml(String(m.unit_price ?? ''))}</td>
-<td>${escapeHtml(String(m.supply_price ?? ''))}</td>
-<td>${escapeHtml(String(m.received_qty ?? ''))}</td>
-<td>${escapeHtml(m.pack_unit)}</td>
-<td>${escapeHtml(m.payment_date)}</td>
-<td>${escapeHtml(String(m.payment_amount ?? ''))}</td>
-<td>${escapeHtml(m.payment_recipient)}</td>
-<td class="wrap">${escapeHtml(m.note)}</td>
-<td>
-<form method="POST" action="/admin/purchase-data/${m.id}/delete" class="inline" onsubmit="return confirm('이 구매건을 삭제할까요?');">
-<button type="submit" class="btn small danger">삭제</button>
-</form>
-</td>
-</tr>`).join('');
+// 예전에는 등록된 구매건 전체(수천 건)를 표로 그려서 보여줬는데, 그만큼 페이지 렌더링이 느려지고
+// 실제로는 다들 "구매Data 다운로드"로 엑셀을 받아서 확인하지 화면에서 보지는 않는다고 해서
+// 전체 목록 표는 없앴다. 대신 업로드 배치별 건수/삭제는 아래 "업로드 배치 관리"에서 그대로 할 수 있다.
+const totalCount = records.length;
 
 // 업로드 배치(엑셀 1회 업로드)별로 묶어서, 배치 전체를 한 번에 지울 수 있는 표를 만든다.
 // import_batch가 비어있는 행은 이 기능이 생기기 전에 등록된 이전 데이터라 별도로 묶는다.
@@ -2178,13 +2254,7 @@ ${batchMap.size > 0 ? `
 </div>
 </div>` : ''}
 <div class="card">
-${records.length === 0 ? '<p class="hint">수동으로 등록된 구매건이 없습니다.</p>' : `
-<div class="table-scroll">
-<table class="table-wide">
-<thead><tr>${PURCHASE_DATA_COLS.map((h) => `<th>${escapeHtml(h)}</th>`).join('')}<th></th></tr></thead>
-<tbody>${rows}</tbody>
-</table>
-</div>`}
+${totalCount === 0 ? '<p class="hint">수동으로 등록된 구매건이 없습니다.</p>' : `<p class="hint" style="margin:0;">현재 ${totalCount}건이 등록되어 있습니다. 전체 내용은 위 "구매Data 다운로드"로 엑셀을 받아서 확인하세요. 잘못 등록된 건은 개별 삭제 대신 위 "업로드 배치 관리"에서 배치 단위로 삭제해주세요.</p>`}
 </div>
 `;
 return layout({ title: '구매Data', body, user, flash, active: 'purchase-data' });
@@ -2292,7 +2362,7 @@ ${siteOptions}
 <div><label>규격1</label><input type="text" name="item_spec[]"></div>
 <div><label>규격2</label><input type="text" name="item_spec2[]"></div>
 <div><label>규격3</label><input type="text" name="item_spec3[]"></div>
-<div><label>수량</label><input type="number" name="item_qty[]" value="1" min="1"></div>
+<div><label>수량</label><input type="text" inputmode="numeric" class="numfmt" name="item_qty[]" value="1"></div>
 <div><label>단위</label><input type="text" name="item_unit[]" placeholder="예) 포, 톤, EA"></div>
 <div><label>구분</label><select name="item_kind[]"><option value="requested">요청품</option><option value="substitute">대체품</option></select></div>
 <div><label>대체 대상 품목명<span class="hint">(대체품인 경우만)</span></label><input type="text" name="item_alt_of[]" placeholder="원래 요청품 품목명"></div>
@@ -2363,7 +2433,7 @@ const itemRows = items.map((it) => `
 <div><label>규격1</label><input type="text" name="item_spec[]" value="${escapeHtml(it.spec || '')}"></div>
 <div><label>규격2</label><input type="text" name="item_spec2[]" value="${escapeHtml(it.spec2 || '')}"></div>
 <div><label>규격3</label><input type="text" name="item_spec3[]" value="${escapeHtml(it.spec3 || '')}"></div>
-<div><label>수량</label><input type="number" name="item_qty[]" value="${it.qty}" min="1"></div>
+<div><label>수량</label><input type="text" inputmode="numeric" class="numfmt" name="item_qty[]" value="${fmtNum(it.qty)}"></div>
 <div><label>단위</label><input type="text" name="item_unit[]" value="${escapeHtml(it.unit || '')}"></div>
 <div><label>구분</label><select name="item_kind[]"><option value="requested" ${it.item_kind !== 'substitute' ? 'selected' : ''}>요청품</option><option value="substitute" ${it.item_kind === 'substitute' ? 'selected' : ''}>대체품</option></select></div>
 <div><label>대체 대상 품목명<span class="hint">(대체품인 경우만)</span></label><input type="text" name="item_alt_of[]" value="${escapeHtml(it.alt_of_name || '')}" placeholder="원래 요청품 품목명"></div>
@@ -2378,7 +2448,7 @@ const blankRow = `
 <div><label>규격1</label><input type="text" name="item_spec[]"></div>
 <div><label>규격2</label><input type="text" name="item_spec2[]"></div>
 <div><label>규격3</label><input type="text" name="item_spec3[]"></div>
-<div><label>수량</label><input type="number" name="item_qty[]" value="1" min="1"></div>
+<div><label>수량</label><input type="text" inputmode="numeric" class="numfmt" name="item_qty[]" value="1"></div>
 <div><label>단위</label><input type="text" name="item_unit[]"></div>
 <div><label>구분</label><select name="item_kind[]"><option value="requested">요청품</option><option value="substitute">대체품</option></select></div>
 <div><label>대체 대상 품목명<span class="hint">(대체품인 경우만)</span></label><input type="text" name="item_alt_of[]" placeholder="원래 요청품 품목명"></div>
@@ -2747,11 +2817,11 @@ ${canSubmit ? `
 <div><label>규격1</label><input type="text" name="spec" value="${escapeHtml(s.spec || '')}"></div>
 <div><label>규격2</label><input type="text" name="spec2" value="${escapeHtml(s.spec2 || '')}"></div>
 <div><label>규격3</label><input type="text" name="spec3" value="${escapeHtml(s.spec3 || '')}"></div>
-<div><label>수량</label><input type="number" name="qty" value="${s.qty}" min="1" required></div>
+<div><label>수량</label><input type="text" inputmode="numeric" class="numfmt" name="qty" value="${fmtNum(s.qty)}" required></div>
 <div><label>단위</label><input type="text" name="unit" value="${escapeHtml(s.unit || '')}"></div>
 </div>
 <div class="form-row">
-<div><label>단가(원)</label><input type="number" name="unit_price" min="0" required value="${s.unit_price}"></div>
+<div><label>단가(원)</label><input type="text" inputmode="numeric" class="numfmt" name="unit_price" required value="${fmtNum(s.unit_price)}"></div>
 <div><label>납기일자</label><input type="date" name="delivery_date" value="${escapeHtml(s.delivery_date || '')}"></div>
 <div><label>제조사</label><input type="text" name="manufacturer" value="${escapeHtml(s.manufacturer || '')}"></div>
 </div>
@@ -2774,11 +2844,11 @@ ${req0 ? `<input type="hidden" name="submission_id" value="${req0.id}">` : ''}
 <div><label>규격1</label><input type="text" name="spec" value="${escapeHtml(req0 ? (req0.spec || '') : (it.spec || ''))}"></div>
 <div><label>규격2</label><input type="text" name="spec2" value="${escapeHtml(req0 ? (req0.spec2 || '') : (it.spec2 || ''))}"></div>
 <div><label>규격3</label><input type="text" name="spec3" value="${escapeHtml(req0 ? (req0.spec3 || '') : (it.spec3 || ''))}"></div>
-<div><label>수량</label><input type="number" name="qty" value="${req0 ? req0.qty : it.qty}" min="1" required></div>
+<div><label>수량</label><input type="text" inputmode="numeric" class="numfmt" name="qty" value="${fmtNum(req0 ? req0.qty : it.qty)}" required></div>
 <div><label>단위</label><input type="text" name="unit" value="${escapeHtml(req0 ? (req0.unit || '') : (it.unit || ''))}"></div>
 </div>
 <div class="form-row">
-<div><label>단가(원)</label><input type="number" name="unit_price" min="0" required value="${req0 ? req0.unit_price : ''}"></div>
+<div><label>단가(원)</label><input type="text" inputmode="numeric" class="numfmt" name="unit_price" required value="${req0 ? fmtNum(req0.unit_price) : ''}"></div>
 <div><label>납기일자</label><input type="date" name="delivery_date" value="${escapeHtml(req0 ? (req0.delivery_date || '') : '')}"></div>
 <div><label>제조사</label><input type="text" name="manufacturer" value="${escapeHtml(req0 ? (req0.manufacturer || '') : '')}"></div>
 </div>
@@ -2800,11 +2870,11 @@ ${canSubmit ? `
 <div><label>규격1</label><input type="text" name="spec"></div>
 <div><label>규격2</label><input type="text" name="spec2"></div>
 <div><label>규격3</label><input type="text" name="spec3"></div>
-<div><label>수량</label><input type="number" name="qty" value="${it.qty}" min="1" required></div>
+<div><label>수량</label><input type="text" inputmode="numeric" class="numfmt" name="qty" value="${fmtNum(it.qty)}" required></div>
 <div><label>단위</label><input type="text" name="unit"></div>
 </div>
 <div class="form-row">
-<div><label>단가(원)</label><input type="number" name="unit_price" min="0" required></div>
+<div><label>단가(원)</label><input type="text" inputmode="numeric" class="numfmt" name="unit_price" required></div>
 <div><label>납기일자</label><input type="date" name="delivery_date"></div>
 <div><label>제조사</label><input type="text" name="manufacturer"></div>
 </div>
@@ -3175,7 +3245,7 @@ const fromDate = /^\d{4}-\d{2}-\d{2}$/.test(req.query.from || '') ? req.query.fr
 const toDate = /^\d{4}-\d{2}-\d{2}$/.test(req.query.to || '') ? req.query.to : '';
 const combinedRows = await getCombinedPurchaseDataRows({ fromDate, toDate });
 const rangeLabel = (fromDate || toDate) ? `${fromDate || '처음'}~${toDate || '오늘'}` : `전체_${new Date().toISOString().slice(0, 10)}`;
-sendXlsxTemplate(res, `구매Data_${rangeLabel}.xlsx`, ['구매Data'], [[], PURCHASE_DATA_COLS, ...combinedRows]);
+sendXlsxTemplate(res, `구매Data_${rangeLabel}.xlsx`, ['구매Data'], [[], PURCHASE_DATA_COLS, ...combinedRows], null, PURCHASE_DATA_NUMERIC_COLS);
 });
 
 // ---- 힐마루 구매 실적 보고서(hillmaru-purchase-performance-report 스킬) 원본데이터용 다운로드 ----
@@ -3207,7 +3277,7 @@ if (sheets.length === 0) {
 sheets.push({ name: '구매Data', rows: [['구매Data'], [], PURCHASE_DATA_COLS] });
 }
 const rangeLabel = (fromDate || toDate) ? `${fromDate || '처음'}~${toDate || '오늘'}` : `전체_${new Date().toISOString().slice(0, 10)}`;
-sendMultiSheetXlsx(res, `구매실적보고서_원본데이터_${rangeLabel}.xlsx`, sheets);
+sendMultiSheetXlsx(res, `구매실적보고서_원본데이터_${rangeLabel}.xlsx`, sheets, PURCHASE_DATA_NUMERIC_COLS);
 });
 
 // ===== 구매 실적 보고서(PPTX) 자동 생성 =====
@@ -4119,7 +4189,9 @@ redirect(res, '/admin/sites');
 router.get('/admin/purchase-data', async (req, res) => {
 const u = requireLogin('admin')(req, res);
 if (!u) return;
-const records = await db.prepare('SELECT * FROM manual_purchase_records ORDER BY id DESC').all();
+// 화면에는 더 이상 전체 데이터를 표로 그리지 않으므로, 업로드 배치 묶음 계산에 필요한
+// 컬럼(import_batch, import_file_name)만 가져와서 매번 전체 데이터를 통째로 내려받지 않게 한다.
+const records = await db.prepare('SELECT import_batch, import_file_name FROM manual_purchase_records').all();
 res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
 res.end(views.adminPurchaseDataPage({ user: u, records }));
 });
@@ -4128,7 +4200,8 @@ router.get('/admin/purchase-data/template', (req, res) => {
 const u = requireLogin('admin')(req, res);
 if (!u) return;
 sendXlsxTemplate(res, '구매Data_수동입력_양식.xlsx', PURCHASE_DATA_COLS,
-[['이관현 과장', '2026', '포천', '경기팀', '농자재', '', '', 'D-2026-001', '예시) 잔디용 비료 구매', '예시업체(주)', '2026-08-01', '2026-08-10', '요청품', '유기질 비료', '20kg', 10, 55000, 550000, 10, '포대', '2026-08-15', 550000, '포천', '견적시스템 미사용 건 예시']]
+[['이관현 과장', '2026', '포천', '경기팀', '농자재', '', '', 'D-2026-001', '예시) 잔디용 비료 구매', '예시업체(주)', '2026-08-01', '2026-08-10', '요청품', '유기질 비료', '20kg', 10, 55000, 550000, 10, '포대', '2026-08-15', 550000, '포천', '견적시스템 미사용 건 예시']],
+null, PURCHASE_DATA_NUMERIC_COLS
 );
 });
 
@@ -4471,7 +4544,8 @@ sendXlsxTemplate(res, '견적요청_품목_일괄등록_양식.xlsx',
 ['예) 비료', '요청품', '', '20kg', '', '', '10', '포', '코스', '저장품', ''],
 ['비료', '대체품', '대체 비료(제안 제품명)', '20kg', '', '', '10', '포', '코스', '저장품', ''],
 ],
-[{ col: 1, list: ['요청품', '대체품'], firstRow: 2, lastRow: 3 }]
+[{ col: 1, list: ['요청품', '대체품'], firstRow: 2, lastRow: 3 }],
+[6]
 );
 });
 
@@ -4545,7 +4619,7 @@ const insertItem = db.prepare('INSERT INTO quote_items (quote_request_id, item_n
 for (let i = 0; i < names.length; i++) {
 if (!names[i] || !names[i].trim()) continue;
 const kind = kinds[i] === 'substitute' ? 'substitute' : 'requested';
-await insertItem.run(qrId, names[i].trim(), specs[i] || '', spec2s[i] || '', spec3s[i] || '', Number(qtys[i]) || 1, units[i] || '', cat1s[i] || '', cat2s[i] || '', cat3s[i] || '', kind, kind === 'substitute' ? (altOfs[i] || '').trim() : '');
+await insertItem.run(qrId, names[i].trim(), specs[i] || '', spec2s[i] || '', spec3s[i] || '', numFromInput(qtys[i]) || 1, units[i] || '', cat1s[i] || '', cat2s[i] || '', cat3s[i] || '', kind, kind === 'substitute' ? (altOfs[i] || '').trim() : '');
 }
 for (const it of parseItemsExcel(files.items_excel)) {
 await insertItem.run(qrId, it.name, it.spec, it.spec2, it.spec3, it.qty, it.unit, it.category1 || '', it.category2 || '', it.category3 || '', it.kind, it.altOf || '');
@@ -4799,9 +4873,9 @@ if (!names[i] || !names[i].trim()) continue;
 const kind = kinds[i] === 'substitute' ? 'substitute' : 'requested';
 const altOf = kind === 'substitute' ? (altOfs[i] || '').trim() : '';
 if (itemId) {
-await updateItem.run(names[i].trim(), specs[i] || '', spec2s[i] || '', spec3s[i] || '', Number(qtys[i]) || 1, units[i] || '', cat1s[i] || '', cat2s[i] || '', cat3s[i] || '', kind, altOf, itemId, id);
+await updateItem.run(names[i].trim(), specs[i] || '', spec2s[i] || '', spec3s[i] || '', numFromInput(qtys[i]) || 1, units[i] || '', cat1s[i] || '', cat2s[i] || '', cat3s[i] || '', kind, altOf, itemId, id);
 } else {
-await insertItem.run(id, names[i].trim(), specs[i] || '', spec2s[i] || '', spec3s[i] || '', Number(qtys[i]) || 1, units[i] || '', cat1s[i] || '', cat2s[i] || '', cat3s[i] || '', kind, altOf);
+await insertItem.run(id, names[i].trim(), specs[i] || '', spec2s[i] || '', spec3s[i] || '', numFromInput(qtys[i]) || 1, units[i] || '', cat1s[i] || '', cat2s[i] || '', cat3s[i] || '', kind, altOf);
 }
 }
 for (const it of parseItemsExcel(files.items_excel)) {
@@ -4909,8 +4983,8 @@ existing = await db.prepare("SELECT * FROM submissions WHERE quote_item_id=? AND
 }
 
 const vals = [
-body.product_name || '', body.spec || '', body.spec2 || '', body.spec3 || '', Number(body.qty) || 1, body.unit || '',
-Number(body.unit_price) || 0, body.delivery_date || null, body.manufacturer || '',
+body.product_name || '', body.spec || '', body.spec2 || '', body.spec3 || '', numFromInput(body.qty) || 1, body.unit || '',
+numFromInput(body.unit_price) || 0, body.delivery_date || null, body.manufacturer || '',
 type === 'substitute' ? (body.substitute_reason || '') : '', type === 'requested' ? (body.note || '') : '',
 new Date().toISOString(),
 ];
@@ -5026,7 +5100,8 @@ const finalRows = rows.length ? [...rows, exampleRow] : [['예) 비료', '요청
 sendXlsxTemplate(res, '견적_일괄제출_양식.xlsx',
 ['품목명', '구분(요청품/대체품)', '제안품목명', '규격1', '규격2', '규격3', '수량', '단위', '단가', '납기일자', '제조사', '비고/제안사유'],
 finalRows,
-[{ col: 1, list: ['요청품', '대체품'], firstRow: 2, lastRow: finalRows.length + 1 }]
+[{ col: 1, list: ['요청품', '대체품'], firstRow: 2, lastRow: finalRows.length + 1 }],
+[6, 8]
 );
 });
 
@@ -5080,8 +5155,8 @@ existing = await db.prepare("SELECT id FROM submissions WHERE quote_item_id=? AN
 }
 
 const vals = [
-productName, spec || '', spec2 || '', spec3 || '', Number(qty) || 1, unit || '',
-Number(unitPrice) || 0, deliveryDate, manufacturer || '',
+productName, spec || '', spec2 || '', spec3 || '', numFromInput(qty) || 1, unit || '',
+numFromInput(unitPrice) || 0, deliveryDate, manufacturer || '',
 type === 'substitute' ? (note || '') : '', type === 'requested' ? (note || '') : '',
 new Date().toISOString(),
 ];
